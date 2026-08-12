@@ -1,0 +1,52 @@
+{
+  "name": "win-video-player",
+  "version": "1.0.0",
+  "description": "Premium Video Player for Windows with support for all formats",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --windows"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.2"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.sophy.videoplayer",
+    "productName": "Sophy Player",
+    "publish": {
+      "provider": "github",
+      "owner": "jeanxprto",
+      "repo": "win-video-player"
+    },
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/ffmpeg-static/ffmpeg.exe"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "icon.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sophy Player"
+    },
+    "files": [
+      "main.js",
+      "index.html",
+      "styles.css",
+      "renderer.js",
+      "logo.png",
+      "package.json"
+    ]
+  }
+}

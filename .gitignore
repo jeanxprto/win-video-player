@@ -1,0 +1,17 @@
+# Dependencias de Node
+node_modules/
+
+# Directorio de distribución y compilación de Electron
+dist/
+release/
+
+# Archivos de logs de error y depuración
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# Archivos temporales o locales del sistema
+.DS_Store
+Thumbs.db
+.env
