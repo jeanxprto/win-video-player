@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Sophy Player</title>
-  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="styles.css?v=fresh_composition">
   <!-- Google Fonts for premium typography -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,7 +30,7 @@
 
     <!-- Reproductor de Video -->
     <main class="player-content">
-      <video id="video-element"></video>
+      <div id="video-element"></div>
 
       <!-- Indicador de volumen HUD (Grande a la derecha) -->
       <div id="volume-indicator" class="volume-indicator">100%</div>
@@ -140,8 +140,29 @@
       <div id="context-menu" class="context-menu">
         <button id="menu-open-file" class="menu-item">Abrir archivo...</button>
         <button id="menu-check-updates" class="menu-item">Comprobar actualizaciones...</button>
+        
+        <div class="menu-divider"></div>
+
+        <!-- Pistas de Audio -->
+        <div class="menu-item has-submenu" id="menu-audio-tracks">
+          <span>Pistas de audio</span>
+          <span class="submenu-arrow">▶</span>
+        </div>
+
+        <!-- Subtítulos -->
+        <div class="menu-item has-submenu" id="menu-subtitle-tracks">
+          <span>Subtítulos</span>
+          <span class="submenu-arrow">▶</span>
+        </div>
+
+        <div class="menu-divider"></div>
+
         <button id="menu-about" class="menu-item">Acerca de...</button>
       </div>
+
+      <!-- Submenús Flotantes (Hermanos del menú contextual principal para habilitar backdrop-filter independiente) -->
+      <div id="submenu-audio" class="submenu-floating"></div>
+      <div id="submenu-subtitles" class="submenu-floating"></div>
     </main>
   </div>
 

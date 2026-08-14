@@ -1,9 +1,109 @@
-const { ipcRenderer, shell } = require('electron');
-const path = require('path');
+// Path helpers en JavaScript puro (sin dependencia de Node.js)
+const path = {
+  basename: (filePath) => {
+    const parts = filePath.split(/[/\\]/);
+    return parts[parts.length - 1];
+  },
+  extname: (filePath) => {
+    const dotIndex = filePath.lastIndexOf('.');
+    return dotIndex === -1 ? '' : filePath.slice(dotIndex);
+  }
+};
+
+// Clase MockVideo que simula la API del elemento HTML5 Video para evitar reescribir la UI
+class MockVideo extends EventTarget {
+  constructor() {
+    super();
+    this._src = '';
+    this._currentTime = 0;
+    this._duration = 0;
+    this._paused = true;
+    this._volume = 1;
+    this._muted = false;
+    this.textTracks = [{ mode: 'disabled' }];
+    this.buffered = {
+      length: 0,
+      end: (index) => 0
+    };
+  }
+
+  get src() { return this._src; }
+  set src(val) {
+    this._src = val;
+    if (val) {
+      window.chrome.webview.postMessage(JSON.stringify({ action: 'load', path: val }));
+    }
+  }
+
+  load() {
+    // libVLC carga de forma automática al asignar el source
+  }
+
+  play() {
+    this._paused = false;
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'play' }));
+    return Promise.resolve();
+  }
+
+  pause() {
+    this._paused = true;
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'pause' }));
+  }
+
+  get currentTime() { return this._currentTime; }
+  set currentTime(val) {
+    this._currentTime = val;
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'seek', time: val }));
+  }
+
+  get duration() { return this._duration; }
+  set duration(val) { this._duration = val; }
+
+  get paused() { return this._paused; }
+  
+  get volume() { return this._volume; }
+  set volume(val) {
+    this._volume = val;
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'volume', volume: val }));
+  }
+
+  get muted() { return this._muted; }
+  set muted(val) {
+    this._muted = val;
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'mute', mute: val }));
+  }
+
+  querySelectorAll(selector) {
+    return [];
+  }
+
+  appendChild(child) {
+    // Las pistas de subtítulos externos se manejan a través de set-subtitle-track
+  }
+}
+
+const video = new MockVideo();
+
+// Mock document.createElement para simular elementos 'track' de subtítulos
+const originalCreateElement = document.createElement.bind(document);
+document.createElement = function(tagName) {
+  if (tagName.toLowerCase() === 'track') {
+    return {
+      tagName: 'TRACK',
+      kind: 'subtitles',
+      srclang: 'es',
+      default: true,
+      label: '',
+      src: '',
+      remove: () => {}
+    };
+  }
+  return originalCreateElement(tagName);
+};
 
 // Elementos del DOM
 const appContainer = document.querySelector('.app-container');
-const video = document.getElementById('video-element');
+const videoPlaceholder = document.getElementById('video-element');
 const dropZone = document.getElementById('drop-zone');
 const selectFileBtn = document.getElementById('select-file-btn');
 const loadingOverlay = document.getElementById('loading-overlay');
@@ -53,6 +153,16 @@ const updateProgressBar = document.getElementById('update-progress-bar');
 const updateBtnAction = document.getElementById('update-btn-action');
 const menuCheckUpdates = document.getElementById('menu-check-updates');
 
+// Submenús del Menú Contextual
+const submenuAudio = document.getElementById('submenu-audio');
+const submenuSubtitles = document.getElementById('submenu-subtitles');
+
+// Estado de pistas de audio y subtítulos
+let currentAudioTrack = '';       // Índice del stream de audio activo
+let currentSubtitleTrack = '-1';   // Índice del stream de subtítulo activo (-1 = desactivados)
+let mediaAudioTracks = [];        // Lista de pistas de audio del video
+let mediaSubtitleTracks = [];     // Lista de pistas de subtítulos del video
+
 // Botones de control de ventana de Windows
 const winMinBtn = document.getElementById('win-min-btn');
 const winMaxBtn = document.getElementById('win-max-btn');
@@ -60,13 +170,8 @@ const winCloseBtn = document.getElementById('win-close-btn');
 
 // Estado de reproducción
 let currentFilePath = '';
-let isNative = true;
-let customDuration = 0;          // Duración para videos transcodificados (segundos)
-let currentVideoCodec = 'unknown';
-let currentAudioCodec = 'unknown';
-let transcodeSeekOffset = 0;     // Tiempo desde el cual se inició la transcodificación activa (segundos)
-let previousVolume = 1;          // Almacena el volumen previo para silenciar/activar sonido
-let isSeeking = false;           // Bandera para evitar que la barra salte mientras se arrastra
+let previousVolume = 1;          
+let isSeeking = false;           
 let controlsTimeout = null;
 
 // SVG Icons para alternar Estados
@@ -80,40 +185,56 @@ const MAXIMIZE_SVG = '<svg viewBox="0 0 10 10" width="10" height="10"><rect x="0
 const RESTORE_SVG = '<svg viewBox="0 0 10 10" width="10" height="10"><path d="M2.5,2.5 L2.5,0.5 L9.5,0.5 L9.5,7.5 L7.5,7.5 M0.5,2.5 L7.5,2.5 L7.5,9.5 L0.5,9.5 Z" fill="none" stroke="currentColor" stroke-width="1"/></svg>';
 
 /* ==========================================
-   Controles de Ventana de Windows (IPC)
+   Controles de Ventana de Windows (IPC C++)
    ========================================== */
-winMinBtn.addEventListener('click', () => ipcRenderer.send('window-minimize'));
-winMaxBtn.addEventListener('click', () => ipcRenderer.send('window-maximize'));
-winCloseBtn.addEventListener('click', () => ipcRenderer.send('window-close'));
+winMinBtn.addEventListener('click', () => window.chrome.webview.postMessage(JSON.stringify({ action: 'window-minimize' })));
+winMaxBtn.addEventListener('click', () => window.chrome.webview.postMessage(JSON.stringify({ action: 'window-maximize' })));
+winCloseBtn.addEventListener('click', () => window.chrome.webview.postMessage(JSON.stringify({ action: 'window-close' })));
 
-ipcRenderer.on('window-maximized', (event, maximized) => {
-  winMaxBtn.innerHTML = maximized ? RESTORE_SVG : MAXIMIZE_SVG;
-});
+// Habilitar el arrastre de la ventana en la barra de título personalizada
+const dragRegion = document.querySelector('.drag-region');
+if (dragRegion) {
+  dragRegion.addEventListener('mousedown', (e) => {
+    if (e.button === 0) { // Click izquierdo
+      window.chrome.webview.postMessage(JSON.stringify({ action: 'window-drag' }));
+    }
+  });
+}
 
 /* ==========================================
    Carga e Inicialización de Videos
    ========================================== */
 
-// Abre el selector de archivos
-async function triggerFileOpen() {
-  const filePath = await ipcRenderer.invoke('open-file-dialog');
-  if (filePath) {
-    loadVideo(filePath);
-  }
+// Abre el selector de archivos nativo
+function triggerFileOpen() {
+  window.chrome.webview.postMessage(JSON.stringify({ action: 'open-file-dialog' }));
 }
 
 selectFileBtn.addEventListener('click', triggerFileOpen);
 backBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   if (currentFilePath) {
-    shell.showItemInFolder(currentFilePath);
-  } else {
-    console.log('No hay ningún archivo de video cargado actualmente.');
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'show-in-folder', path: currentFilePath }));
   }
 });
 
-// Carga el archivo en el reproductor (detecta si es nativo o requiere transcodificación)
-async function loadVideo(filePath) {
+// Función para enviar posición y tamaño del video a C++
+function updateVideoPosition() {
+  if (!video.src) return;
+  const rect = videoPlaceholder.getBoundingClientRect();
+  window.chrome.webview.postMessage(JSON.stringify({
+    action: 'resize-video',
+    left: Math.round(rect.left),
+    top: Math.round(rect.top),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height)
+  }));
+}
+
+window.addEventListener('resize', updateVideoPosition);
+
+// Carga el archivo en el reproductor (se comunica con C++ nativo)
+function loadVideo(filePath) {
   currentFilePath = filePath;
   const fileName = path.basename(filePath);
   videoTitle.textContent = fileName;
@@ -122,71 +243,36 @@ async function loadVideo(filePath) {
   // Ocultar zona drop y mostrar overlay de carga
   dropZone.classList.remove('active');
   loadingOverlay.classList.add('active');
-  loadingText.textContent = "Analizando formato de video...";
+  loadingText.textContent = "Cargando video nativo...";
 
   // Resetear estados
-  transcodeSeekOffset = 0;
-  customDuration = 0;
-  video.pause();
+  video._src = filePath;
+  video._paused = true;
+  currentAudioTrack = '';
+  currentSubtitleTrack = '-1';
 
-  const ext = path.extname(filePath).toLowerCase();
-  isNative = ['.mp4', '.webm', '.ogg'].includes(ext);
-
-  if (isNative) {
-    console.log('Video nativo detectado:', fileName);
-    video.src = `http://localhost:8888/stream?path=${encodeURIComponent(filePath)}`;
-    video.load();
-  } else {
-    console.log('Video no nativo (requiere transcodificación):', fileName);
-    loadingText.textContent = "Obteniendo duración e iniciando transcodificación...";
-    
-    try {
-      // Obtener la duración real del video consultando al servidor
-      const response = await fetch(`http://localhost:8888/duration?path=${encodeURIComponent(filePath)}`);
-      const data = await response.json();
-      
-      if (data.duration) {
-        customDuration = data.duration;
-        currentVideoCodec = data.videoCodec || 'unknown';
-        currentAudioCodec = data.audioCodec || 'unknown';
-        console.log('Metadatos obtenidos del video:', data);
-      } else {
-        throw new Error('No se pudo leer la duración');
-      }
-
-      // Conectar el video al stream transcodificado pasándole los codecs
-      video.src = `http://localhost:8888/stream?path=${encodeURIComponent(filePath)}&videoCodec=${currentVideoCodec}&audioCodec=${currentAudioCodec}&start=0`;
-      video.load();
-    } catch (err) {
-      console.error('Error cargando video no nativo:', err);
-      alert('Error al procesar el video. Verifica que sea un formato válido.');
-      resetToWelcomeScreen();
-      return;
-    }
-  }
-
-  // Auto-play cuando el video esté listo para reproducirse
-  video.play().catch(e => console.log('Auto-play bloqueado o cancelado:', e));
+  // Enviar mensaje a C++ para iniciar la carga
+  window.chrome.webview.postMessage(JSON.stringify({ action: 'load', path: filePath }));
 }
 
 function resetToWelcomeScreen() {
   currentFilePath = '';
-  customDuration = 0;
-  transcodeSeekOffset = 0;
-  video.removeAttribute('src');
-  video.load();
+  video._src = '';
   dropZone.classList.add('active');
   loadingOverlay.classList.remove('active');
   controlsOverlay.classList.remove('visible');
   appContainer.classList.add('controls-visible');
+  document.documentElement.classList.remove('video-active');
   videoTitle.textContent = "Video title";
   document.title = "Sophy Player";
+  
+  window.chrome.webview.postMessage(JSON.stringify({ action: 'stop' }));
 }
 
-// Eventos de estado de carga del elemento Video
+// Eventos de estado de carga
 video.addEventListener('waiting', () => {
   loadingOverlay.classList.add('active');
-  loadingText.textContent = isNative ? "Cargando..." : "Transcodificando buffer...";
+  loadingText.textContent = "Cargando...";
 });
 
 video.addEventListener('playing', () => {
@@ -204,22 +290,12 @@ video.addEventListener('pause', () => {
    Lógica del Tiempo de Reproducción y Seek
    ========================================== */
 
-// Retorna el tiempo actual absoluto del video (considera el offset si es transcodificado)
 function getDisplayTime() {
-  if (isNative) {
-    return video.currentTime;
-  } else {
-    return transcodeSeekOffset + video.currentTime;
-  }
+  return video.currentTime;
 }
 
-// Retorna la duración absoluta del video
 function getDuration() {
-  if (isNative) {
-    return video.duration || 0;
-  } else {
-    return customDuration;
-  }
+  return video.duration;
 }
 
 // Actualiza el indicador de tiempo e interfaz de progreso
@@ -229,32 +305,12 @@ video.addEventListener('timeupdate', () => {
   const current = getDisplayTime();
   const total = getDuration();
 
-  // Actualizar display de texto
   timeDisplay.textContent = `${formatTime(current)} / ${formatTime(total)}`;
 
-  // Actualizar barra de progreso
   if (total > 0) {
     const pct = (current / total) * 100;
     progressActive.style.width = `${pct}%`;
     progressThumb.style.left = `${pct}%`;
-  }
-});
-
-// Muestra el progreso de almacenamiento en buffer
-video.addEventListener('progress', () => {
-  const duration = getDuration();
-  if (duration > 0 && video.buffered.length > 0) {
-    const bufferedEnd = video.buffered.end(video.buffered.length - 1);
-    
-    let bufferPct = 0;
-    if (isNative) {
-      bufferPct = (bufferedEnd / duration) * 100;
-    } else {
-      // En transcodificación, el buffer reportado es relativo al stream actual
-      const currentStreamPos = transcodeSeekOffset + bufferedEnd;
-      bufferPct = (currentStreamPos / duration) * 100;
-    }
-    progressBuffer.style.width = `${Math.min(100, bufferPct)}%`;
   }
 });
 
@@ -276,26 +332,13 @@ function formatTime(seconds) {
 function seekTo(targetTime) {
   const total = getDuration();
   targetTime = Math.max(0, Math.min(total, targetTime));
-
-  if (isNative) {
-    video.currentTime = targetTime;
-  } else {
-    // Si es transcodificación, debemos reiniciar el stream local en el nuevo segundo
-    loadingOverlay.classList.add('active');
-    loadingText.textContent = "Buscando en video...";
-    
-    transcodeSeekOffset = targetTime;
-    video.src = `http://localhost:8888/stream?path=${encodeURIComponent(currentFilePath)}&videoCodec=${currentVideoCodec}&audioCodec=${currentAudioCodec}&start=${targetTime}`;
-    video.load();
-    video.play().catch(e => console.log(e));
-  }
+  video.currentTime = targetTime;
 }
 
 /* ==========================================
    Controles Interactivos y Botones
    ========================================== */
 
-// Alternar Play/Pause
 function togglePlay() {
   if (!video.src) return;
   if (video.paused) {
@@ -310,7 +353,6 @@ playBtn.addEventListener('click', (e) => {
   togglePlay();
 });
 
-// Saltos de 10s (Atrás/Adelante)
 rewindBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   seekTo(getDisplayTime() - 10);
@@ -321,14 +363,12 @@ forwardBtn.addEventListener('click', (e) => {
   seekTo(getDisplayTime() + 10);
 });
 
-// Click en el reproductor de video para alternar Play/Pause
-video.addEventListener('click', () => {
+videoPlaceholder.addEventListener('click', () => {
   if (video.src) {
     togglePlay();
   }
 });
 
-// Manejo del control deslizante (Drag and click seeking)
 function handleTimelineClick(e) {
   if (!video.src) return;
   const rect = progressContainer.getBoundingClientRect();
@@ -365,7 +405,6 @@ function handleTimelineDrag(e) {
   const width = rect.width;
   const percentage = Math.max(0, Math.min(1, dragX / width));
   
-  // Actualizar UI en caliente (sin buscar en video aún para mejor fluidez visual)
   const pctValue = percentage * 100;
   progressActive.style.width = `${pctValue}%`;
   progressThumb.style.left = `${pctValue}%`;
@@ -374,7 +413,6 @@ function handleTimelineDrag(e) {
   timeDisplay.textContent = `${formatTime(targetTime)} / ${formatTime(getDuration())}`;
 
   if (!isSeeking) {
-    // Si es solo click o soltamos el arrastre, hacemos el seek real en el reproductor
     seekTo(targetTime);
   }
 }
@@ -384,12 +422,14 @@ function toggleFullscreen() {
   if (!document.fullscreenElement) {
     document.documentElement.requestFullscreen().then(() => {
       fullscreenIcon.innerHTML = MINIMIZE_SCREEN_SVG;
+      updateVideoPosition();
     }).catch(err => {
       console.error('Error al intentar activar pantalla completa:', err);
     });
   } else {
     document.exitFullscreen().then(() => {
       fullscreenIcon.innerHTML = FULLSCREEN_SVG;
+      updateVideoPosition();
     });
   }
 }
@@ -411,10 +451,8 @@ function updateVolumeUI() {
   const vol = video.volume;
   const muted = video.muted;
 
-  // Sincronizar control deslizante
   volumeSlider.value = muted ? 0 : vol;
 
-  // Sincronizar icono
   if (muted || vol === 0) {
     volumeBtn.innerHTML = MUTE_SVG;
   } else if (vol < 0.5) {
@@ -426,7 +464,6 @@ function updateVolumeUI() {
 
 let volumeIndicatorTimeout = null;
 
-// Mostrar indicador de volumen gigante (HUD)
 function showVolumeIndicator() {
   const pct = Math.round((video.muted ? 0 : video.volume) * 100);
   volumeIndicator.textContent = `${pct}%`;
@@ -435,10 +472,9 @@ function showVolumeIndicator() {
   clearTimeout(volumeIndicatorTimeout);
   volumeIndicatorTimeout = setTimeout(() => {
     volumeIndicator.classList.remove('visible');
-  }, 1500); // Ocultar tras 1.5s
+  }, 1500);
 }
 
-// Alternar silencio al hacer clic en el botón de volumen
 volumeBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   if (video.muted) {
@@ -454,7 +490,6 @@ volumeBtn.addEventListener('click', (e) => {
   showVolumeIndicator();
 });
 
-// Control deslizante de volumen interactivo
 volumeSlider.addEventListener('input', (e) => {
   const val = parseFloat(e.target.value);
   video.volume = val;
@@ -466,16 +501,11 @@ volumeSlider.addEventListener('input', (e) => {
   showVolumeIndicator();
 });
 
-// Control de volumen con la rueda del ratón (scroll) en el área del reproductor
 document.querySelector('.player-content').addEventListener('wheel', (e) => {
   if (!video.src) return;
-
-  // Prevenir scroll de la aplicación
   e.preventDefault();
 
   video.muted = false;
-
-  // deltaY < 0 indica scroll hacia arriba, deltaY > 0 indica scroll hacia abajo
   if (e.deltaY < 0) {
     video.volume = Math.min(1, video.volume + 0.05);
   } else {
@@ -487,11 +517,9 @@ document.querySelector('.player-content').addEventListener('wheel', (e) => {
   triggerControlsShow();
 }, { passive: false });
 
-// Inicializar el estado de la barra de volumen al cargar
 updateVolumeUI();
 
-// Doble click en el video para pantalla completa
-video.addEventListener('dblclick', () => {
+videoPlaceholder.addEventListener('dblclick', () => {
   if (video.src) {
     toggleFullscreen();
   }
@@ -508,25 +536,21 @@ function triggerControlsShow() {
   
   clearTimeout(controlsTimeout);
   
-  // Solo ocultar si el video se está reproduciendo
   if (!video.paused && video.src) {
     controlsTimeout = setTimeout(() => {
       controlsOverlay.classList.remove('visible');
-      // Ocultar también el cursor dentro de la pantalla del video
       controlsOverlay.classList.add('no-cursor');
       appContainer.classList.remove('controls-visible');
     }, 3000);
   }
 }
 
-// Eventos de movimiento de mouse en los controles
 document.querySelector('.player-content').addEventListener('mousemove', triggerControlsShow);
 
 /* ==========================================
    Drag & Drop de Archivos
    ========================================== */
 
-// Prevenir comportamiento por defecto al arrastrar
 ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
   document.addEventListener(eventName, preventDefaults, false);
 });
@@ -536,7 +560,6 @@ function preventDefaults(e) {
   e.stopPropagation();
 }
 
-// Cambiar estilo de la zona drop al arrastrar encima
 document.addEventListener('dragenter', () => {
   if (!dropZone.classList.contains('active')) {
     dropZone.classList.add('active');
@@ -550,7 +573,6 @@ dropZone.addEventListener('dragover', () => {
 
 dropZone.addEventListener('dragleave', () => {
   if (currentFilePath !== '') {
-    // Si ya hay un video cargado, ocultar la zona drop al salir
     dropZone.classList.remove('active');
   }
   dropZone.classList.remove('dragover');
@@ -563,14 +585,20 @@ dropZone.addEventListener('drop', (e) => {
 
   if (files.length > 0) {
     const file = files[0];
-    // Verificar si es un archivo de video (a través de la extensión para evitar falsos negativos en Windows)
-    const ext = path.extname(file.path).toLowerCase();
-    const videoExtensions = ['.mp4', '.webm', '.ogg', '.mkv', '.avi', '.flv', 'mov', 'wmv', 'm4v', '3gp'];
-    
-    if (videoExtensions.includes(ext)) {
-      loadVideo(file.path);
+    if (file && file.path) {
+      const ext = path.extname(file.path).toLowerCase();
+      const videoExtensions = ['.mp4', '.webm', '.ogg', '.mkv', '.avi', '.flv', 'mov', 'wmv', 'm4v', '3gp'];
+      
+      if (videoExtensions.includes(ext)) {
+        loadVideo(file.path);
+      } else {
+        alert('Por favor, arrastra un archivo de video válido.');
+        if (currentFilePath !== '') {
+          dropZone.classList.remove('active');
+        }
+      }
     } else {
-      alert('Por favor, arrastra un archivo de video válido.');
+      alert('Por motivos de seguridad del navegador, para reproducir un video debes utilizar el botón "Seleccionar Archivo".');
       if (currentFilePath !== '') {
         dropZone.classList.remove('active');
       }
@@ -626,72 +654,72 @@ document.addEventListener('keydown', (e) => {
 document.querySelector('.player-content').addEventListener('contextmenu', (e) => {
   e.preventDefault();
   
-  // Posicionar menú
-  contextMenu.style.left = `${e.clientX}px`;
-  contextMenu.style.top = `${e.clientY}px`;
   contextMenu.classList.add('active');
+  const menuWidth = contextMenu.offsetWidth || 180;
+  const menuHeight = contextMenu.offsetHeight || 220;
+  
+  let posX = e.clientX;
+  if (e.clientX + menuWidth > window.innerWidth) {
+    posX = e.clientX - menuWidth;
+  }
+  
+  let posY = e.clientY;
+  if (e.clientY + menuHeight > window.innerHeight) {
+    posY = e.clientY - menuHeight;
+  }
+  
+  posX = Math.max(0, posX);
+  posY = Math.max(0, posY);
+  
+  contextMenu.style.left = `${posX}px`;
+  contextMenu.style.top = `${posY}px`;
 });
 
-// Abrir menú de opciones desde el botón de la barra superior
 menuBtn.addEventListener('click', (e) => {
   e.stopPropagation();
   if (contextMenu.classList.contains('active')) {
-    contextMenu.classList.remove('active');
+    cerrarMenuContextual();
   } else {
-    // Posicionar debajo del botón de menú
-    const rect = menuBtn.getBoundingClientRect();
-    contextMenu.style.left = `${rect.right - 150}px`; // Alinear borde derecho
-    contextMenu.style.top = `${rect.bottom + 8}px`;   // Debajo del botón
     contextMenu.classList.add('active');
+    const rect = menuBtn.getBoundingClientRect();
+    const menuWidth = contextMenu.offsetWidth || 180;
+    contextMenu.style.left = `${rect.right - menuWidth}px`;
+    contextMenu.style.top = `${rect.bottom + 8}px`;
   }
 });
 
-// Cerrar menú al hacer clic en cualquier parte
 document.addEventListener('click', (e) => {
   if (!contextMenu.contains(e.target) && !menuBtn.contains(e.target)) {
-    contextMenu.classList.remove('active');
+    cerrarMenuContextual();
   }
 });
 
-// Opciones del menú
 document.getElementById('menu-open-file').addEventListener('click', () => {
   triggerFileOpen();
-  contextMenu.classList.remove('active');
+  cerrarMenuContextual();
 });
 
-
 document.getElementById('menu-about').addEventListener('click', () => {
-  contextMenu.classList.remove('active');
+  cerrarMenuContextual();
   aboutModal.classList.add('active');
 });
 
-// Cerrar el modal al hacer clic en la "X"
 closeModalBtn.addEventListener('click', () => {
   aboutModal.classList.remove('active');
 });
 
-
-// Cerrar el modal al hacer clic fuera del contenido
 aboutModal.addEventListener('click', (e) => {
   if (e.target === aboutModal) {
     aboutModal.classList.remove('active');
   }
 });
 
-// Listener para cargar archivos pasados por línea de comandos
-ipcRenderer.on('load-file-arg', (event, filePath) => {
-  console.log('Cargando archivo recibido por argumento:', filePath);
-  loadVideo(filePath);
-});
-
-// Variable para almacenar la acción activa en el botón del modal
+// Variable para almacenar la acción activa en el botón de updates
 let currentUpdateAction = null;
 
-// Abrir el modal e iniciar búsqueda de actualizaciones
 menuCheckUpdates.addEventListener('click', () => {
-  contextMenu.classList.remove('active');
+  cerrarMenuContextual();
   
-  // Reiniciar estado visual del modal
   updateModalTitle.textContent = 'Actualizaciones';
   updateModalDesc.textContent = 'Iniciando búsqueda de actualizaciones...';
   updateLoader.style.display = 'block';
@@ -700,14 +728,10 @@ menuCheckUpdates.addEventListener('click', () => {
   updateBtnAction.style.display = 'none';
   
   updateModal.classList.add('active');
-  
-  // Enviar comando al proceso principal
-  ipcRenderer.send('comprobar-actualizacion');
+  window.chrome.webview.postMessage(JSON.stringify({ action: 'check-updates' }));
 });
 
-// Cerrar modal de actualización
 closeUpdateModalBtn.addEventListener('click', () => {
-  // Evitar cerrar si se está descargando activamente
   if (updateProgressContainer.style.display === 'block' && updateBtnAction.style.display === 'none') {
     return;
   }
@@ -723,20 +747,20 @@ updateModal.addEventListener('click', (e) => {
   }
 });
 
-// Manejar acción del botón del modal (Descargar o Reiniciar e Instalar)
 updateBtnAction.addEventListener('click', () => {
   if (currentUpdateAction === 'descargar') {
     updateLoader.style.display = 'block';
     updateModalDesc.textContent = 'Descargando actualización...';
-    updateBtnAction.style.display = 'none'; // Deshabilitar mientras se descarga
-    ipcRenderer.send('iniciar-descarga');
+    updateBtnAction.style.display = 'none';
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'start-download' }));
   } else if (currentUpdateAction === 'instalar') {
-    ipcRenderer.send('aplicar-actualizacion');
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'apply-update' }));
+  } else if (currentUpdateAction === 'cerrar') {
+    updateModal.classList.remove('active');
   }
 });
 
-// Escuchar estados de la actualización desde el proceso principal
-ipcRenderer.on('estado-actualizacion', (event, estado, info) => {
+function handleUpdateStatus(estado, info) {
   switch (estado) {
     case 'buscando':
       updateLoader.style.display = 'block';
@@ -760,11 +784,6 @@ ipcRenderer.on('estado-actualizacion', (event, estado, info) => {
       updateBtnAction.textContent = 'Entendido';
       updateBtnAction.style.display = 'block';
       currentUpdateAction = 'cerrar';
-      
-      updateBtnAction.onclick = () => {
-        updateModal.classList.remove('active');
-        updateBtnAction.onclick = null; // Quitar listener inline
-      };
       break;
 
     case 'descargada':
@@ -781,30 +800,330 @@ ipcRenderer.on('estado-actualizacion', (event, estado, info) => {
       updateLoader.style.display = 'none';
       updateProgressContainer.style.display = 'none';
       updateModalTitle.textContent = 'Error';
-      
-      let errorMsg = info || 'Ocurrió un error inesperado al buscar actualizaciones.';
-      if (errorMsg.includes('dev-app-update.yml')) {
-        errorMsg = 'Las actualizaciones automáticas requieren ejecutar la aplicación empaquetada e instalada.';
-      }
-      updateModalDesc.textContent = errorMsg;
+      updateModalDesc.textContent = info || 'Ocurrió un error inesperado al buscar actualizaciones.';
       updateBtnAction.textContent = 'Aceptar';
       updateBtnAction.style.display = 'block';
       currentUpdateAction = 'cerrar';
-      
-      updateBtnAction.onclick = () => {
-        updateModal.classList.remove('active');
-        updateBtnAction.onclick = null;
-      };
       break;
   }
-});
+}
 
-// Escuchar el progreso de descarga de la actualización
-ipcRenderer.on('progreso-descarga', (event, percent) => {
+function handleUpdateProgress(percent) {
   updateLoader.style.display = 'none';
   updateProgressContainer.style.display = 'block';
   const displayPercent = Math.round(percent || 0);
   updateProgressBar.style.width = `${displayPercent}%`;
   updateModalDesc.textContent = `Descargando actualización... (${displayPercent}%)`;
+}
+
+/* ==============================================================
+   Lógica de Pistas de Audio y Subtítulos (Submenús Dinámicos)
+   ============================================================== */
+
+// Poblar dinámicamente las listas HTML de los submenús
+function poblarSubmenus() {
+  // 1. Poblar submenú de audio
+  submenuAudio.innerHTML = '';
+  if (mediaAudioTracks.length === 0) {
+    const defaultItem = document.createElement('div');
+    defaultItem.className = 'menu-item';
+    defaultItem.style.color = 'rgba(255, 255, 255, 0.4)';
+    defaultItem.style.pointerEvents = 'none';
+    defaultItem.textContent = 'Audio por defecto';
+    submenuAudio.appendChild(defaultItem);
+  } else {
+    mediaAudioTracks.forEach(track => {
+      const btn = originalCreateElement('button'); // Usar native button
+      btn.className = 'menu-item';
+      
+      const isSelected = currentAudioTrack === track.index.toString() || 
+                         (currentAudioTrack === '' && track.index === mediaAudioTracks[0].index);
+      if (isSelected) {
+        btn.classList.add('active');
+      }
+      
+      btn.textContent = `${track.langName} [${track.details}]`;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cambiarPistaAudio(track.index.toString());
+      });
+      submenuAudio.appendChild(btn);
+    });
+  }
+
+  // 2. Poblar submenú de subtítulos
+  submenuSubtitles.innerHTML = '';
+
+  // Opción "Desactivados"
+  const btnDisable = originalCreateElement('button');
+  btnDisable.className = 'menu-item';
+  if (currentSubtitleTrack === '-1') {
+    btnDisable.classList.add('active');
+  }
+  btnDisable.textContent = 'Desactivados';
+  btnDisable.addEventListener('click', (e) => {
+    e.stopPropagation();
+    cambiarPistaSubtítulo('-1');
+  });
+  submenuSubtitles.appendChild(btnDisable);
+
+  // Cargar subtítulos internos si existen
+  if (mediaSubtitleTracks.length > 0) {
+    mediaSubtitleTracks.forEach(track => {
+      const btn = originalCreateElement('button');
+      btn.className = 'menu-item';
+      
+      if (currentSubtitleTrack === track.index.toString()) {
+        btn.classList.add('active');
+      }
+      
+      btn.textContent = `${track.langName} [${track.details}]`;
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        cambiarPistaSubtítulo(track.index.toString(), false);
+      });
+      submenuSubtitles.appendChild(btn);
+    });
+  }
+
+  const divLine = document.createElement('div');
+  divLine.className = 'menu-divider';
+  submenuSubtitles.appendChild(divLine);
+
+  // Opción "Cargar archivo externo..."
+  const btnExternal = originalCreateElement('button');
+  btnExternal.className = 'menu-item';
+  if (currentSubtitleTrack === 'external') {
+    btnExternal.classList.add('active');
+  }
+  btnExternal.textContent = 'Cargar archivo externo...';
+  btnExternal.addEventListener('click', (e) => {
+    e.stopPropagation();
+    cargarSubtituloExterno();
+  });
+  submenuSubtitles.appendChild(btnExternal);
+}
+
+// Cambiar la pista de audio
+function cambiarPistaAudio(trackIndex) {
+  if (currentAudioTrack === trackIndex) return;
+  currentAudioTrack = trackIndex;
+  cerrarMenuContextual();
+  
+  loadingOverlay.classList.add('active');
+  loadingText.textContent = "Cambiando de idioma...";
+  
+  window.chrome.webview.postMessage(JSON.stringify({
+    action: 'set-audio-track',
+    trackIndex: trackIndex
+  }));
+  
+  poblarSubmenus();
+
+  // Ocultar el overlay tras un breve retraso para dar tiempo a la transición de audio nativa
+  setTimeout(() => {
+    loadingOverlay.classList.remove('active');
+  }, 800);
+}
+
+// Activar o desactivar subtítulos
+function cambiarPistaSubtítulo(trackIndex, isExternal = false, path = null) {
+  currentSubtitleTrack = trackIndex;
+  cerrarMenuContextual();
+  
+  if (trackIndex === '-1') {
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'set-subtitle-track', trackIndex: '-1' }));
+    poblarSubmenus();
+    return;
+  }
+  
+  if (isExternal) {
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'set-subtitle-track', trackIndex: 'external', path: path }));
+  } else {
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'set-subtitle-track', trackIndex: trackIndex }));
+  }
+  
+  poblarSubmenus();
+}
+
+// Abrir diálogo para subtítulo externo
+function cargarSubtituloExterno() {
+  cerrarMenuContextual();
+  window.chrome.webview.postMessage(JSON.stringify({ action: 'open-subtitle-dialog' }));
+}
+
+function posicionarSubmenu(menuItem, submenu) {
+  const itemRect = menuItem.getBoundingClientRect();
+  const submenuWidth = submenu.offsetWidth || 185;
+  
+  submenu.style.top = `${itemRect.top - 6}px`;
+  
+  const isTooFarRight = (itemRect.right + submenuWidth) > window.innerWidth;
+  if (isTooFarRight) {
+    submenu.style.left = `${itemRect.left - submenuWidth + 6}px`;
+  } else {
+    submenu.style.left = `${itemRect.right - 6}px`;
+  }
+}
+
+function cerrarMenuContextual() {
+  contextMenu.classList.remove('active');
+  document.querySelectorAll('.submenu-floating').forEach(sub => {
+    sub.classList.remove('visible');
+  });
+  if (document.activeElement) {
+    document.activeElement.blur();
+  }
+}
+
+function setupSubmenuHover(menuItem, submenu) {
+  let closeTimeout = null;
+  
+  menuItem.addEventListener('mouseenter', () => {
+    if (closeTimeout) clearTimeout(closeTimeout);
+    
+    document.querySelectorAll('.submenu-floating').forEach(sub => {
+      if (sub !== submenu) sub.classList.remove('visible');
+    });
+    
+    submenu.classList.add('visible');
+    posicionarSubmenu(menuItem, submenu);
+  });
+  
+  menuItem.addEventListener('mouseleave', () => {
+    closeTimeout = setTimeout(() => {
+      if (!submenu.matches(':hover')) {
+        submenu.classList.remove('visible');
+      }
+    }, 100);
+  });
+  
+  submenu.addEventListener('mouseenter', () => {
+    if (closeTimeout) clearTimeout(closeTimeout);
+  });
+  
+  submenu.addEventListener('mouseleave', () => {
+    closeTimeout = setTimeout(() => {
+      if (!menuItem.matches(':hover')) {
+        submenu.classList.remove('visible');
+      }
+    }, 100);
+  });
+}
+
+const menuAudioItem = document.getElementById('menu-audio-tracks');
+const menuSubtitleItem = document.getElementById('menu-subtitle-tracks');
+setupSubmenuHover(menuAudioItem, submenuAudio);
+setupSubmenuHover(menuSubtitleItem, submenuSubtitles);
+
+/* ==========================================
+   Recepción de Mensajes IPC de C++ WebView2
+   ========================================== */
+window.chrome.webview.addEventListener('message', event => {
+  const message = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+  switch (message.type) {
+    case 'window-maximized':
+      winMaxBtn.innerHTML = message.maximized ? RESTORE_SVG : MAXIMIZE_SVG;
+      break;
+
+    case 'file-selected':
+      loadVideo(message.path);
+      break;
+
+    case 'media-loaded':
+      document.documentElement.classList.add('video-active');
+      video._duration = message.duration;
+      mediaAudioTracks = message.audioTracks || [];
+      mediaSubtitleTracks = message.subtitleTracks || [];
+      
+      if (mediaAudioTracks.length > 0) {
+        currentAudioTrack = mediaAudioTracks[0].index.toString();
+      } else {
+        currentAudioTrack = '';
+      }
+      currentSubtitleTrack = '-1';
+      poblarSubmenus();
+      
+      loadingOverlay.classList.remove('active');
+      dropZone.classList.remove('active');
+      
+      // Ajustar posición nativa del reproductor de video en C++
+      setTimeout(updateVideoPosition, 100);
+      break;
+
+    case 'time-update':
+      video._currentTime = message.currentTime;
+      video.dispatchEvent(new Event('timeupdate'));
+      break;
+
+    case 'playing-state':
+      video._paused = !message.playing;
+      video.dispatchEvent(new Event(message.playing ? 'playing' : 'pause'));
+      break;
+
+    case 'subtitle-selected':
+      cambiarPistaSubtítulo('external', true, message.path);
+      break;
+
+    case 'update-status':
+      handleUpdateStatus(message.status, message.info);
+      break;
+
+    case 'update-progress':
+      handleUpdateProgress(message.percent);
+      break;
+  }
 });
 
+// Habilitar redimensionado desde los bordes y esquinas vía JavaScript (para ventana sin bordes físicos)
+const RESIZE_BORDER = 6; // Margen de 6 píxeles para redimensionado
+window.addEventListener('mousemove', (e) => {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const x = e.clientX;
+  const y = e.clientY;
+
+  let cursor = 'default';
+  const left = x < RESIZE_BORDER;
+  const right = x > w - RESIZE_BORDER;
+  const top = y < RESIZE_BORDER;
+  const bottom = y > h - RESIZE_BORDER;
+
+  if (top && left) cursor = 'nwse-resize';
+  else if (top && right) cursor = 'nesw-resize';
+  else if (bottom && left) cursor = 'nesw-resize';
+  else if (bottom && right) cursor = 'nwse-resize';
+  else if (left || right) cursor = 'ew-resize';
+  else if (top || bottom) cursor = 'ns-resize';
+
+  document.documentElement.style.cursor = cursor !== 'default' ? cursor : '';
+});
+
+window.addEventListener('mousedown', (e) => {
+  if (e.button !== 0) return; // Solo click izquierdo
+
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const x = e.clientX;
+  const y = e.clientY;
+
+  const left = x < RESIZE_BORDER;
+  const right = x > w - RESIZE_BORDER;
+  const top = y < RESIZE_BORDER;
+  const bottom = y > h - RESIZE_BORDER;
+
+  let dir = '';
+  if (top && left) dir = 'topleft';
+  else if (top && right) dir = 'topright';
+  else if (bottom && left) dir = 'bottomleft';
+  else if (bottom && right) dir = 'bottomright';
+  else if (left) dir = 'left';
+  else if (right) dir = 'right';
+  else if (top) dir = 'top';
+  else if (bottom) dir = 'bottom';
+
+  if (dir) {
+    e.preventDefault();
+    window.chrome.webview.postMessage(JSON.stringify({ action: 'window-resize', direction: dir }));
+  }
+});

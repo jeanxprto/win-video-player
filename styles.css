@@ -6,32 +6,29 @@
 }
 
 html, body {
+  margin: 0;
+  padding: 0;
   width: 100%;
   height: 100%;
-  overflow: hidden;
-  background: #161a22; /* Color oscuro base */
+  background: transparent !important;
+  color: #fff;
   font-family: 'Outfit', sans-serif;
-  color: #e2e8f0;
+  overflow: hidden;
   user-select: none;
-}
-
-body {
-  padding: 0;
-  margin: 0;
 }
 
 /* Contenedor principal de la aplicación */
 .app-container {
   width: 100%;
   height: 100%;
-  background-color: #161a22;
+  background-color: transparent !important;
   border-radius: 0;       /* Esquinas rectas */
-  box-shadow: none;       /* Sin sombra exterior */
-  border: none;           /* Sin borde brillante */
-  position: relative;
-  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08); /* Sutil borde superior */
   display: flex;
   flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  position: relative;
 }
 
 /* Barra de Título Personalizada para Windows */
@@ -103,10 +100,10 @@ body {
   height: 100%;
   position: relative;
   flex-grow: 1;
-  background-color: #000;
+  background-color: transparent !important;
 }
 
-video {
+video, #video-element {
   width: 100%;
   height: 100%;
   display: block;
@@ -469,7 +466,7 @@ video {
   border-radius: 12px;
   padding: 6px;
   display: none;
-  min-width: 150px;
+  min-width: 180px;
 }
 
 .context-menu.active {
@@ -490,6 +487,7 @@ video {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  white-space: nowrap;
   transition: background-color 0.15s, color 0.15s;
 }
 
@@ -498,10 +496,64 @@ video {
   color: #fff;
 }
 
+.menu-item:focus,
+.menu-item:focus-visible {
+  outline: none;
+  background-color: transparent;
+}
+
 .menu-item.active::after {
   content: '✓';
   color: #ff4d4d;
   font-weight: bold;
+}
+
+/* Submenús del menú contextual */
+.menu-item.has-submenu {
+  position: relative;
+}
+
+.submenu-arrow {
+  font-size: 9px;
+  opacity: 0.5;
+  margin-left: 12px;
+  transition: transform 0.15s ease;
+}
+
+.menu-item.has-submenu:hover .submenu-arrow {
+  transform: translateX(2px);
+  opacity: 0.9;
+}
+
+.submenu-floating {
+  position: absolute;
+  background-color: rgba(22, 26, 34, 0.3); /* EXACTAMENTE igual al menú de opciones */
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
+  border-radius: 12px;
+  transform: translateZ(0);
+  will-change: backdrop-filter;
+  padding: 6px;
+  display: none;
+  min-width: 185px;
+  z-index: 2200;
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.submenu-floating.visible {
+  display: block;
+}
+
+.submenu-floating::-webkit-scrollbar {
+  width: 4px;
+}
+
+.submenu-floating::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
 }
 
 .menu-divider {
@@ -712,4 +764,13 @@ video {
 
 .modal-ok-btn:active {
   transform: scale(0.97);
+}
+
+/* Soporte para transparencia de video nativo en C++ WebView2 */
+html.video-active,
+html.video-active body,
+html.video-active .app-container,
+html.video-active .player-content {
+  background-color: transparent !important;
+  background: transparent !important;
 }

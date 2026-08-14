@@ -3,7 +3,7 @@ const { autoUpdater } = require('electron-updater');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
-const { execFile, spawn } = require('child_process');
+const { exec, execFile, spawn } = require('child_process');
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegPath = require('ffmpeg-static');
 
@@ -18,6 +18,34 @@ ffmpeg.setFfmpegPath(resolvedFfmpegPath);
 
 let mainWindow = null;
 let activeTranscodeCommand = null;
+let hardwareAccelerationType = 'software'; // 'nvenc', 'qsv', 'amf', 'software'
+
+// Detecta si la máquina cuenta con soporte para codificación acelerada por hardware de GPU
+function detectHardwareAcceleration() {
+  return new Promise((resolve) => {
+    exec(`"${resolvedFfmpegPath}" -encoders`, (error, stdout, stderr) => {
+      if (error) {
+        console.error('[GPU Detection] Error al consultar codificadores:', error);
+        resolve('software');
+        return;
+      }
+      const encoders = stdout || stderr || '';
+      if (encoders.includes('h264_nvenc')) {
+        console.log('[GPU Detection] NVIDIA NVENC detectado.');
+        resolve('nvenc');
+      } else if (encoders.includes('h264_qsv')) {
+        console.log('[GPU Detection] Intel QuickSync (QSV) detectado.');
+        resolve('qsv');
+      } else if (encoders.includes('h264_amf')) {
+        console.log('[GPU Detection] AMD AMF detectado.');
+        resolve('amf');
+      } else {
+        console.log('[GPU Detection] No se detectó aceleración compatible. Usando software (CPU).');
+        resolve('software');
+      }
+    });
+  });
+}
 
 // Servidor local de streaming y transcodificación
 const PORT = 8888;
@@ -67,15 +95,50 @@ const server = http.createServer((req, res) => {
     const ext = path.extname(decodedPath).toLowerCase();
     // Formatos nativos de Chromium/Electron
     const isNative = ['.mp4', '.webm', '.ogg'].includes(ext);
+    const start = reqUrl.searchParams.get('start') ? parseFloat(reqUrl.searchParams.get('start')) : 0;
+    const videoCodec = reqUrl.searchParams.get('videoCodec') || 'unknown';
+    const audioCodec = reqUrl.searchParams.get('audioCodec') || 'unknown';
+    const audioTrack = reqUrl.searchParams.get('audioTrack'); // Obtener pista de audio seleccionada
 
-    if (isNative) {
+    // Si es nativo y no se pide pista de audio específica, servir directo.
+    // De lo contrario, usar transcodificador/remuxer para mapear el track deseado.
+    if (isNative && (!audioTrack || audioTrack === '')) {
       serveNativeFile(decodedPath, req, res);
     } else {
-      const start = reqUrl.searchParams.get('start') ? parseFloat(reqUrl.searchParams.get('start')) : 0;
-      const videoCodec = reqUrl.searchParams.get('videoCodec') || 'unknown';
-      const audioCodec = reqUrl.searchParams.get('audioCodec') || 'unknown';
-      serveTranscodedFile(decodedPath, start, videoCodec, audioCodec, req, res);
+      serveTranscodedFile(decodedPath, start, videoCodec, audioCodec, audioTrack, req, res);
     }
+  } else if (action === '/subtitle') {
+    const trackIndex = reqUrl.searchParams.get('index') ? parseInt(reqUrl.searchParams.get('index')) : 0;
+    const decodedPath = decodeURIComponent(filePath);
+
+    if (!fs.existsSync(decodedPath)) {
+      res.writeHead(404);
+      res.end('File not found');
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'text/vtt; charset=utf-8',
+      'Access-Control-Allow-Origin': '*'
+    });
+
+    // Extraer subtítulo y convertir a WebVTT directamente vía pipe
+    const subProcess = spawn(resolvedFfmpegPath, [
+      '-i', decodedPath,
+      '-map', `0:${trackIndex}`,
+      '-f', 'webvtt',
+      'pipe:1'
+    ]);
+
+    subProcess.stdout.pipe(res);
+
+    subProcess.on('error', (err) => {
+      console.error('Error al extraer subtítulos:', err);
+      if (!res.writableEnded) {
+        res.writeHead(500);
+        res.end();
+      }
+    });
   } else {
     res.writeHead(404);
     res.end('Not Found');
@@ -125,7 +188,7 @@ function serveNativeFile(filePath, req, res) {
 }
 
 // Función para transcodificar/copiar archivos no nativos al vuelo de forma inteligente
-function serveTranscodedFile(filePath, start, videoCodec, audioCodec, req, res) {
+function serveTranscodedFile(filePath, start, videoCodec, audioCodec, audioTrack, req, res) {
   // Cancelar proceso previo si existe
   if (activeTranscodeCommand) {
     try {
@@ -135,6 +198,10 @@ function serveTranscodedFile(filePath, start, videoCodec, audioCodec, req, res) 
       console.log('Error al detener FFmpeg previo:', e);
     }
   }
+
+  // Leer parámetro query de soporte de HEVC desde la petición
+  const reqUrl = new URL(req.url, 'http://localhost');
+  const hevcSupport = reqUrl.searchParams.get('hevcSupport') === 'true';
 
   // Determinar si podemos simplemente copiar el stream de video y audio
   const canCopyVideo = ['h264', 'vp8', 'vp9', 'av1'].includes(videoCodec);
@@ -155,20 +222,52 @@ function serveTranscodedFile(filePath, start, videoCodec, audioCodec, req, res) 
     videoArg = ['-c:v', 'copy'];
     audioArg = canCopyAudio ? ['-c:a', 'copy'] : ['-c:a', 'libvorbis'];
   } else {
-    // Para H.264 (copia) y otros formatos (transcodificación a H.264)
+    // Para H.264 (copia), HEVC soportado por cliente (copia/remux) y otros (transcodificación)
     containerFormat = 'mp4';
     contentType = 'video/mp4';
 
-    if (videoCodec === 'h264') {
+    const isHEVCNativo = (videoCodec === 'hevc' || videoCodec === 'h265') && hevcSupport;
+
+    if (videoCodec === 'h264' || isHEVCNativo) {
+      console.log(`[Streaming] Remuxing directo activado para video: ${videoCodec}`);
       videoArg = ['-c:v', 'copy'];
     } else {
-      // Transcodificación de alta calidad y muy rápida
-      videoArg = [
-        '-c:v', 'libx264',
-        '-preset', 'ultrafast',
-        '-crf', '20', // Calidad premium (casi imperceptible pérdida)
-        '-pix_fmt', 'yuv420p' // Compatible con todos los navegadores
-      ];
+      // Transcodificación dinámica por hardware GPU / CPU
+      if (hardwareAccelerationType === 'nvenc') {
+        console.log('[Streaming] Usando NVIDIA NVENC para codificar H.264');
+        videoArg = [
+          '-c:v', 'h264_nvenc',
+          '-preset', 'p1',
+          '-tune', 'ull',
+          '-cq', '24',
+          '-pix_fmt', 'yuv420p'
+        ];
+      } else if (hardwareAccelerationType === 'qsv') {
+        console.log('[Streaming] Usando Intel QSV para codificar H.264');
+        videoArg = [
+          '-c:v', 'h264_qsv',
+          '-preset', 'veryfast',
+          '-global_quality', '22',
+          '-pix_fmt', 'yuv420p'
+        ];
+      } else if (hardwareAccelerationType === 'amf') {
+        console.log('[Streaming] Usando AMD AMF para codificar H.264');
+        videoArg = [
+          '-c:v', 'h264_amf',
+          '-quality', 'speed',
+          '-rc', 'cfl',
+          '-pix_fmt', 'yuv420p'
+        ];
+      } else {
+        console.log('[Streaming] Aceleración no disponible, usando codificador por software (CPU)');
+        videoArg = [
+          '-c:v', 'libx264',
+          '-preset', 'ultrafast',
+          '-tune', 'zerolatency',
+          '-crf', '22',
+          '-pix_fmt', 'yuv420p'
+        ];
+      }
     }
 
     if (canCopyAudio) {
@@ -178,10 +277,10 @@ function serveTranscodedFile(filePath, start, videoCodec, audioCodec, req, res) 
       audioArg = ['-c:a', 'aac', '-b:a', '192k', '-af', 'aresample=async=1'];
     }
 
-    // Configuración para fragmentar MP4 en tiempo real para que sea reproducible en streaming
+    // Configuración para fragmentar MP4 con fragmentos pequeños (0.5s) para inicio de reproducción instantáneo
     formatOptions = [
       '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-      '-frag_duration', '3000000'
+      '-frag_duration', '500000'
     ];
   }
 
@@ -222,6 +321,11 @@ function serveTranscodedFile(filePath, start, videoCodec, audioCodec, req, res) 
   }
 
   args.push('-i', filePath);
+
+  // Mapear streams específicos de audio si se seleccionó una pista distinta
+  if (audioTrack !== null && audioTrack !== undefined && audioTrack !== '') {
+    args.push('-map', '0:v:0', '-map', `0:${audioTrack}`);
+  }
 
   // 2. Salto preciso después del input (-i) para descartar los últimos segundos y alinear audio/video
   if (outputSeek > 0) {
@@ -379,7 +483,10 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(async () => {
+  hardwareAccelerationType = await detectHardwareAcceleration();
+  createWindow();
+});
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
@@ -423,6 +530,32 @@ ipcMain.handle('open-file-dialog', async () => {
   });
   if (!result.canceled && result.filePaths.length > 0) {
     return result.filePaths[0];
+  }
+  return null;
+});
+
+// Selector de archivos de subtítulos del sistema
+ipcMain.handle('open-subtitle-dialog', async () => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Subtítulos', extensions: ['srt', 'vtt'] }
+    ]
+  });
+  if (!result.canceled && result.filePaths.length > 0) {
+    try {
+      const filePath = result.filePaths[0];
+      const content = fs.readFileSync(filePath, 'utf-8');
+      return {
+        name: path.basename(filePath),
+        content: content,
+        ext: path.extname(filePath).toLowerCase()
+      };
+    } catch (e) {
+      console.error('Error al leer archivo de subtítulos:', e);
+      return null;
+    }
   }
   return null;
 });
@@ -507,4 +640,74 @@ autoUpdater.on('update-downloaded', (info) => {
     mainWindow.webContents.send('estado-actualizacion', 'descargada', info);
   }
 });
+
+// Lógica de análisis de streams de video (probeMedia) usando FFmpeg
+function probeMedia(filePath) {
+  return new Promise((resolve) => {
+    const ffmpegProcess = spawn(resolvedFfmpegPath, ['-i', filePath]);
+    let stderrOutput = '';
+    
+    ffmpegProcess.stderr.on('data', (data) => {
+      stderrOutput += data.toString();
+    });
+    
+    ffmpegProcess.on('close', () => {
+      const audioTracks = [];
+      const subtitleTracks = [];
+      
+      // Capturar flujos mediante regex de la salida de FFmpeg (stderr)
+      const streamRegex = /Stream #0:(\d+)(?:\(([^)]+)\))?: (Audio|Subtitle): (.*)/gi;
+      let match;
+      
+      while ((match = streamRegex.exec(stderrOutput)) !== null) {
+        const index = parseInt(match[1]);
+        const lang = match[2] || 'und';
+        const type = match[3];
+        const details = match[4];
+        
+        let languageName = lang.toUpperCase();
+        if (lang === 'spa' || lang === 'es') languageName = 'Español';
+        else if (lang === 'eng' || lang === 'en') languageName = 'Inglés';
+        else if (lang === 'fre' || lang === 'fr') languageName = 'Francés';
+        else if (lang === 'ger' || lang === 'de') languageName = 'Alemán';
+        else if (lang === 'ita' || lang === 'it') languageName = 'Italiano';
+        else if (lang === 'por' || lang === 'pt') languageName = 'Portugués';
+        else if (lang === 'und') languageName = 'Desconocido';
+        
+        if (type.toLowerCase() === 'audio') {
+          audioTracks.push({
+            index: index,
+            lang: lang,
+            langName: languageName,
+            details: details.split(',')[0] || ''
+          });
+        } else if (type.toLowerCase() === 'subtitle') {
+          const isGraphical = details.includes('pgs') || details.includes('dvd') || details.includes('picture');
+          if (!isGraphical) {
+            subtitleTracks.push({
+              index: index,
+              lang: lang,
+              langName: languageName,
+              details: details.split(' ')[0] || ''
+            });
+          }
+        }
+      }
+      
+      resolve({ audioTracks, subtitleTracks });
+    });
+  });
+}
+
+// Canal IPC para escanear streams de un archivo de video
+ipcMain.handle('probe-media', async (event, filePath) => {
+  if (!filePath) return { audioTracks: [], subtitleTracks: [] };
+  try {
+    return await probeMedia(filePath);
+  } catch (err) {
+    console.error('[probe-media] Error al escanear pistas:', err);
+    return { audioTracks: [], subtitleTracks: [] };
+  }
+});
+
 
