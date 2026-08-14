@@ -458,7 +458,7 @@ video, #video-element {
 .context-menu {
   position: absolute;
   z-index: 2000;
-  background-color: rgba(22, 26, 34, 0.3);
+  background-color: rgba(22, 26, 34, 0.85);
   backdrop-filter: blur(25px);
   -webkit-backdrop-filter: blur(25px);
   border: 1px solid rgba(255, 255, 255, 0.05);
@@ -527,7 +527,7 @@ video, #video-element {
 
 .submenu-floating {
   position: absolute;
-  background-color: rgba(22, 26, 34, 0.3); /* EXACTAMENTE igual al menú de opciones */
+  background-color: rgba(22, 26, 34, 0.85); /* EXACTAMENTE igual al menú de opciones */
   backdrop-filter: blur(25px);
   -webkit-backdrop-filter: blur(25px);
   border: 1px solid rgba(255, 255, 255, 0.05);

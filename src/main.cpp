@@ -41,6 +41,15 @@ PlayerManager* g_player = nullptr;
 HWND g_hWndParent = nullptr;
 HWND g_hWndVideo = nullptr;
 
+// Helper para convertir string UTF-8 a wstring UTF-16 en Windows
+static std::wstring Utf8ToUtf16(const std::string& utf8Str) {
+    if (utf8Str.empty()) return L"";
+    int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, &utf8Str[0], (int)utf8Str.size(), NULL, 0);
+    std::wstring utf16Str(sizeNeeded, 0);
+    MultiByteToWideChar(CP_UTF8, 0, &utf8Str[0], (int)utf8Str.size(), &utf16Str[0], sizeNeeded);
+    return utf16Str;
+}
+
 // Helper para extraer campos JSON sencillos
 static std::wstring GetJsonValue(const std::wstring& json, const std::wstring& key) {
     size_t pos = json.find(L"\"" + key + L"\"");
@@ -553,8 +562,8 @@ LRESULT CALLBACK VideoWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPa
                     ws << L",\"audioTracks\":[";
                     for (size_t i = 0; i < data->audioTracks.size(); ++i) {
                         ws << L"{\"index\":" << data->audioTracks[i].index 
-                           << L",\"langName\":\"" << EscapeJsonString(std::wstring(data->audioTracks[i].langName.begin(), data->audioTracks[i].langName.end())) << L"\""
-                           << L",\"details\":\"" << EscapeJsonString(std::wstring(data->audioTracks[i].details.begin(), data->audioTracks[i].details.end())) << L"\"}";
+                           << L",\"langName\":\"" << EscapeJsonString(Utf8ToUtf16(data->audioTracks[i].langName)) << L"\""
+                           << L",\"details\":\"" << EscapeJsonString(Utf8ToUtf16(data->audioTracks[i].details)) << L"\"}";
                         if (i + 1 < data->audioTracks.size()) ws << L",";
                     }
                     ws << L"]";
@@ -563,8 +572,8 @@ LRESULT CALLBACK VideoWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lPa
                     ws << L",\"subtitleTracks\":[";
                     for (size_t i = 0; i < data->subtitleTracks.size(); ++i) {
                         ws << L"{\"index\":" << data->subtitleTracks[i].index 
-                           << L",\"langName\":\"" << EscapeJsonString(std::wstring(data->subtitleTracks[i].langName.begin(), data->subtitleTracks[i].langName.end())) << L"\""
-                           << L",\"details\":\"" << EscapeJsonString(std::wstring(data->subtitleTracks[i].details.begin(), data->subtitleTracks[i].details.end())) << L"\"}";
+                           << L",\"langName\":\"" << EscapeJsonString(Utf8ToUtf16(data->subtitleTracks[i].langName)) << L"\""
+                           << L",\"details\":\"" << EscapeJsonString(Utf8ToUtf16(data->subtitleTracks[i].details)) << L"\"}";
                         if (i + 1 < data->subtitleTracks.size()) ws << L",";
                     }
                     ws << L"]}";
