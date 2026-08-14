@@ -1,0 +1,46 @@
+ACUERDO DE LICENCIA DE USO
+
+Sophy Player
+© 2026 Jeanxprto. Todos los derechos reservados. 
+Sitio oficial: https://sophyplayer.jeanxprto.com
+
+1. LICENCIA
+
+Sophy Player es un reproductor multimedia gratuito desarrollado por Jeanxprto. Se concede al usuario una licencia gratuita, limitada, no exclusiva y no transferible para instalar y utilizar la aplicación con fines personales, educativos o comerciales.
+
+La presente licencia no transfiere al usuario ningún derecho de propiedad sobre el software.
+
+2. PROPIEDAD INTELECTUAL
+
+El código fuente, diseño, interfaz, nombre, logotipo, elementos gráficos y demás componentes propios de Sophy Player pertenecen a Jeanxprto y están protegidos por las leyes aplicables de propiedad intelectual.
+
+Queda prohibido copiar, modificar, descompilar, realizar ingeniería inversa, redistribuir, sublicenciar, vender o presentar Sophy Player como un producto propio sin autorización expresa del desarrollador.
+
+3. CONTENIDO MULTIMEDIA
+
+Sophy Player únicamente proporciona herramientas para reproducir contenido multimedia. El usuario es responsable de contar con los derechos o autorizaciones necesarios sobre cualquier contenido que reproduzca mediante la aplicación.
+
+Jeanxprto no reclama propiedad sobre el contenido multimedia del usuario ni se responsabiliza por su uso.
+
+4. COMPONENTES DE TERCEROS
+
+Sophy Player puede incluir o utilizar componentes, bibliotecas, codecs o tecnologías de terceros. Dichos componentes permanecen sujetos a sus respectivas licencias y condiciones de uso.
+
+Cuando corresponda, los avisos y licencias de terceros estarán disponibles dentro de la aplicación o en el sitio web oficial.
+
+5. SIN GARANTÍAS
+
+Sophy Player se proporciona "tal cual" y según disponibilidad. Jeanxprto no garantiza que la aplicación funcione sin errores, interrupciones o compatibilidad con todos los dispositivos y formatos multimedia.
+
+El usuario utiliza la aplicación bajo su propia responsabilidad.
+
+6. ACTUALIZACIONES
+
+Jeanxprto podrá publicar actualizaciones, modificaciones o nuevas versiones de Sophy Player y modificar sus funcionalidades cuando lo considere necesario.
+
+7. ACEPTACIÓN
+
+Al instalar o utilizar Sophy Player, el usuario acepta los términos de este acuerdo.
+
+© 2026 Jeanxprto — Sophy Player  
+https://sophyplayer.jeanxprto.com

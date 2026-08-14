@@ -136,8 +136,21 @@ bool WebviewManager::Initialize(HWND parentHwnd, std::function<void(const std::w
         }
     };
 
+    // Determinar la ruta de la carpeta de datos de usuario para WebView2
+    // Se usa %LOCALAPPDATA% para evitar errores de permisos de escritura si la app se instala en Archivos de programa (Program Files)
+    wchar_t localAppData[MAX_PATH];
+    std::wstring userDataFolder;
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) > 0) {
+        userDataFolder = std::wstring(localAppData) + L"\\SophyPlayer\\WebView2";
+    } else {
+        wchar_t tempPath[MAX_PATH];
+        if (GetTempPathW(MAX_PATH, tempPath) > 0) {
+            userDataFolder = std::wstring(tempPath) + L"SophyPlayerWebView2";
+        }
+    }
+
     auto handler = new EnvironmentCreatedHandler(hWndParent, successCallback);
-    HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, nullptr, nullptr, handler);
+    HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(nullptr, userDataFolder.empty() ? nullptr : userDataFolder.c_str(), nullptr, handler);
     return SUCCEEDED(hr);
 }
 
