@@ -96,3 +96,70 @@ add_custom_command(TARGET SophyPlayer POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different "${CMAKE_CURRENT_SOURCE_DIR}/logo.png" "$<TARGET_FILE_DIR:SophyPlayer>/ui/"
     COMMENT "Copiando archivos HTML/CSS/JS de la UI a la carpeta del ejecutable..."
 )
+
+# ==============================================================================
+# 5. Configuración de CPack para generar el Instalador NSIS (.exe)
+# ==============================================================================
+
+# Variables generales del paquete
+set(CPACK_PACKAGE_NAME "SophyPlayer")
+set(CPACK_PACKAGE_VENDOR "Jeanxprto")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Reproductor de Video Premium para Windows")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "SophyPlayer")
+
+# Configurar el generador NSIS específico de Windows
+set(CPACK_GENERATOR "NSIS")
+
+# Configuración detallada del instalador NSIS
+set(CPACK_NSIS_DISPLAY_NAME "Sophy Player")
+set(CPACK_NSIS_PACKAGE_NAME "Sophy Player")
+set(CPACK_NSIS_HELP_LINK "https://github.com/jeanxprto/win-video-player")
+set(CPACK_NSIS_URL_INFO_ABOUT "https://github.com/jeanxprto/win-video-player")
+
+# Definir iconos personalizados (.ico) si existen en la raíz
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icon.ico")
+    set(CPACK_NSIS_MUI_ICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.ico")
+    set(CPACK_NSIS_MUI_UNIICON "${CMAKE_CURRENT_SOURCE_DIR}/icon.ico")
+endif()
+
+# Accesos directos en Windows (Menú Inicio y Escritorio)
+set(CPACK_NSIS_CREATE_ICONS_EXTRA "
+  CreateShortCut \"$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\Sophy Player.lnk\" \"$INSTDIR\\\\SophyPlayer.exe\"
+  CreateShortCut \"$DESKTOP\\\\Sophy Player.lnk\" \"$INSTDIR\\\\SophyPlayer.exe\"
+")
+
+set(CPACK_NSIS_DELETE_ICONS_EXTRA "
+  Delete \"$SMPROGRAMS\\\\$START_SELECT_DESTINATION\\\\Sophy Player.lnk\"
+  Delete \"$DESKTOP\\\\Sophy Player.lnk\"
+")
+
+# Desinstalar la versión anterior antes de instalar la nueva
+set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
+
+# Reglas de instalación de archivos para el empaquetado final
+install(TARGETS SophyPlayer
+    RUNTIME DESTINATION .
+)
+
+install(FILES
+    "${WEBVIEW2_DLL}"
+    "${VLC_DLL}"
+    "${VLC_CORE_DLL}"
+    DESTINATION .
+)
+
+install(DIRECTORY "${VLC_PLUGINS_DIR}"
+    DESTINATION .
+)
+
+install(FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/index.html"
+    "${CMAKE_CURRENT_SOURCE_DIR}/styles.css"
+    "${CMAKE_CURRENT_SOURCE_DIR}/renderer.js"
+    "${CMAKE_CURRENT_SOURCE_DIR}/logo.png"
+    DESTINATION ui
+)
+
+include(CPack)
+

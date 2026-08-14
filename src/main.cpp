@@ -7,11 +7,14 @@
 #include <vector>
 #include <iostream>
 #include <sstream>
+#include <thread>
+#include <urlmon.h>
 #include "webview_manager.h"
 #include "player_manager.h"
 
 #pragma comment(lib, "Shlwapi.lib")
 #pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "urlmon.lib")
 
 // Mensajes de usuario para comunicación entre hilos (VLC Thread -> UI Thread) y evitar reentrada en WebView2
 #define WM_PLAYER_TIME_UPDATE (WM_USER + 1)
@@ -19,6 +22,8 @@
 #define WM_PLAYER_MEDIA_LOADED (WM_USER + 3)
 #define WM_USER_OPEN_FILE_DIALOG (WM_USER + 4)
 #define WM_USER_OPEN_SUBTITLE_DIALOG (WM_USER + 5)
+#define WM_USER_UPDATE_DOWNLOAD_COMPLETE (WM_USER + 6)
+#define WM_USER_UPDATE_DOWNLOAD_FAILED (WM_USER + 7)
 
 struct MediaLoadedData {
     double duration;
@@ -254,6 +259,35 @@ void HandleWebViewMessage(const std::wstring& messageJson) {
         // Simular no actualizaciones para esta versión nativa de C++
         g_webview->PostMessage(L"{\"type\":\"update-status\",\"status\":\"no-disponible\"}");
     }
+    else if (action == L"open-url") {
+        std::wstring url = GetJsonValue(messageJson, L"url");
+        if (!url.empty()) {
+            ShellExecuteW(NULL, L"open", url.c_str(), NULL, NULL, SW_SHOWNORMAL);
+        }
+    }
+    else if (action == L"start-download") {
+        std::wstring url = GetJsonValue(messageJson, L"url");
+        if (!url.empty()) {
+            wchar_t tempPath[MAX_PATH];
+            if (GetTempPathW(MAX_PATH, tempPath) > 0) {
+                std::wstring destPath = std::wstring(tempPath) + L"sophy_player_setup.exe";
+                
+                // Descargar en segundo plano usando un hilo nativo
+                std::thread([url, destPath]() {
+                    HRESULT hr = URLDownloadToFileW(NULL, url.c_str(), destPath.c_str(), 0, NULL);
+                    if (SUCCEEDED(hr)) {
+                        // Enviar la ruta completa del instalador al hilo principal de la UI
+                        std::wstring* pDestPath = new std::wstring(destPath);
+                        PostMessageW(g_hWndParent, WM_USER_UPDATE_DOWNLOAD_COMPLETE, 0, reinterpret_cast<LPARAM>(pDestPath));
+                    } else {
+                        PostMessageW(g_hWndParent, WM_USER_UPDATE_DOWNLOAD_FAILED, 0, 0);
+                    }
+                }).detach();
+            } else {
+                g_webview->PostMessage(L"{\"type\":\"update-status\",\"status\":\"error\",\"info\":\"No se pudo obtener la ruta temporal de Windows.\"}");
+            }
+        }
+    }
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow) {
@@ -450,6 +484,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             if (bottom) return HTBOTTOM;
 
             return HTCLIENT;
+        }
+
+        case WM_USER_UPDATE_DOWNLOAD_COMPLETE: {
+            std::wstring* pDestPath = reinterpret_cast<std::wstring*>(lParam);
+            if (pDestPath) {
+                // Ejecutar el instalador de forma silenciosa (/S para NSIS)
+                HINSTANCE hInst = ShellExecuteW(NULL, L"open", pDestPath->c_str(), L"/S", NULL, SW_SHOWNORMAL);
+                if ((INT_PTR)hInst > 32) {
+                    // Salir de la aplicación para permitir que el instalador sobrescriba el archivo ejecutable
+                    PostQuitMessage(0);
+                } else {
+                    if (g_webview) g_webview->PostMessage(L"{\"type\":\"update-status\",\"status\":\"error\",\"info\":\"No se pudo ejecutar el instalador descargado.\"}");
+                }
+                delete pDestPath;
+            }
+            break;
+        }
+
+        case WM_USER_UPDATE_DOWNLOAD_FAILED: {
+            if (g_webview) {
+                g_webview->PostMessage(L"{\"type\":\"update-status\",\"status\":\"error\",\"info\":\"Error al descargar el archivo de actualización de Sophy Player.\"}");
+            }
+            break;
         }
 
         case WM_DESTROY:

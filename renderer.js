@@ -1,3 +1,19 @@
+// Versión actual de la aplicación
+const APP_VERSION = '1.0.0';
+
+// Comparador de versiones semánticas (ej. '1.0.0' vs '1.0.1')
+function isNewerVersion(local, remote) {
+  const localParts = local.split('.').map(Number);
+  const remoteParts = remote.split('.').map(Number);
+  for (let i = 0; i < Math.max(localParts.length, remoteParts.length); i++) {
+    const localVal = localParts[i] || 0;
+    const remoteVal = remoteParts[i] || 0;
+    if (remoteVal > localVal) return true;
+    if (remoteVal < localVal) return false;
+  }
+  return false;
+}
+
 // Path helpers en JavaScript puro (sin dependencia de Node.js)
 const path = {
   basename: (filePath) => {
@@ -714,25 +730,58 @@ aboutModal.addEventListener('click', (e) => {
   }
 });
 
-// Variable para almacenar la acción activa en el botón de updates
+// Variables para almacenar el estado y la URL de la actualización activa
 let currentUpdateAction = null;
+let latestReleaseUrl = '';
+let isFallbackPage = false;
 
 menuCheckUpdates.addEventListener('click', () => {
   cerrarMenuContextual();
   
   updateModalTitle.textContent = 'Actualizaciones';
-  updateModalDesc.textContent = 'Iniciando búsqueda de actualizaciones...';
+  updateModalDesc.textContent = 'Buscando actualizaciones disponibles en GitHub...';
   updateLoader.style.display = 'block';
   updateProgressContainer.style.display = 'none';
   updateProgressBar.style.width = '0%';
   updateBtnAction.style.display = 'none';
   
   updateModal.classList.add('active');
-  window.chrome.webview.postMessage(JSON.stringify({ action: 'check-updates' }));
+
+  // Consulta real de la versión más reciente en GitHub
+  fetch('https://api.github.com/repos/jeanxprto/win-video-player/releases/latest')
+    .then(response => {
+      if (!response.ok) throw new Error('No se pudo establecer conexión con el servidor de actualizaciones.');
+      return response.json();
+    })
+    .then(data => {
+      if (!data || !data.tag_name) {
+        throw new Error('Formato de versión no válido en el servidor.');
+      }
+      
+      const remoteVersion = data.tag_name.replace(/^v/, '');
+      if (isNewerVersion(APP_VERSION, remoteVersion)) {
+        // Buscar un instalador ejecutable (.exe) entre los assets del lanzamiento
+        const exeAsset = data.assets && data.assets.find(asset => asset.name.endsWith('.exe'));
+        const downloadUrl = exeAsset ? exeAsset.browser_download_url : null;
+        
+        if (downloadUrl) {
+          handleUpdateStatus('disponible', { version: remoteVersion, url: downloadUrl, isPage: false });
+        } else {
+          // Si no hay un instalador directo, redirigir a la página de releases de GitHub como plan de contingencia
+          handleUpdateStatus('disponible', { version: remoteVersion, url: data.html_url, isPage: true });
+        }
+      } else {
+        handleUpdateStatus('no-disponible');
+      }
+    })
+    .catch(err => {
+      handleUpdateStatus('error', err.message || 'Error al buscar actualizaciones.');
+    });
 });
 
 closeUpdateModalBtn.addEventListener('click', () => {
-  if (updateProgressContainer.style.display === 'block' && updateBtnAction.style.display === 'none') {
+  // Evitar cerrar el modal si la descarga nativa está en curso (el botón de acción estará oculto)
+  if (currentUpdateAction === 'descargar' && updateBtnAction.style.display === 'none') {
     return;
   }
   updateModal.classList.remove('active');
@@ -740,7 +789,7 @@ closeUpdateModalBtn.addEventListener('click', () => {
 
 updateModal.addEventListener('click', (e) => {
   if (e.target === updateModal) {
-    if (updateProgressContainer.style.display === 'block' && updateBtnAction.style.display === 'none') {
+    if (currentUpdateAction === 'descargar' && updateBtnAction.style.display === 'none') {
       return;
     }
     updateModal.classList.remove('active');
@@ -749,12 +798,17 @@ updateModal.addEventListener('click', (e) => {
 
 updateBtnAction.addEventListener('click', () => {
   if (currentUpdateAction === 'descargar') {
-    updateLoader.style.display = 'block';
-    updateModalDesc.textContent = 'Descargando actualización...';
-    updateBtnAction.style.display = 'none';
-    window.chrome.webview.postMessage(JSON.stringify({ action: 'start-download' }));
-  } else if (currentUpdateAction === 'instalar') {
-    window.chrome.webview.postMessage(JSON.stringify({ action: 'apply-update' }));
+    if (isFallbackPage) {
+      // Abrir página de releases en el navegador
+      window.chrome.webview.postMessage(JSON.stringify({ action: 'open-url', url: latestReleaseUrl }));
+      updateModal.classList.remove('active');
+    } else {
+      // Iniciar descarga e instalación en segundo plano mediante C++
+      updateLoader.style.display = 'block';
+      updateModalDesc.textContent = 'Descargando actualización en segundo plano, por favor espera...';
+      updateBtnAction.style.display = 'none';
+      window.chrome.webview.postMessage(JSON.stringify({ action: 'start-download', url: latestReleaseUrl }));
+    }
   } else if (currentUpdateAction === 'cerrar') {
     updateModal.classList.remove('active');
   }
@@ -764,43 +818,35 @@ function handleUpdateStatus(estado, info) {
   switch (estado) {
     case 'buscando':
       updateLoader.style.display = 'block';
-      updateModalDesc.textContent = 'Comprobando si hay actualizaciones disponibles en el servidor...';
+      updateModalDesc.textContent = 'Buscando actualizaciones disponibles en GitHub...';
       updateBtnAction.style.display = 'none';
       break;
 
     case 'disponible':
       updateLoader.style.display = 'none';
       updateModalTitle.textContent = '¡Nueva actualización!';
-      updateModalDesc.textContent = `Una nueva versión está disponible: v${info.version || '1.0.0'}. ¿Deseas descargarla ahora?`;
-      updateBtnAction.textContent = 'Descargar';
+      updateModalDesc.textContent = `Una nueva versión está disponible: v${info.version || '1.0.0'}. ¿Deseas descargarla e instalarla ahora de manera automática?`;
+      updateBtnAction.textContent = 'Actualizar ahora';
       updateBtnAction.style.display = 'block';
       currentUpdateAction = 'descargar';
+      latestReleaseUrl = info.url;
+      isFallbackPage = !!info.isPage;
       break;
 
     case 'no-disponible':
       updateLoader.style.display = 'none';
-      updateModalTitle.textContent = 'Al día';
-      updateModalDesc.textContent = 'Tu reproductor multimedia Sophy ya está actualizado a la última versión.';
+      updateModalTitle.textContent = 'Aplicación al día';
+      updateModalDesc.textContent = `Tu reproductor Sophy Player ya está actualizado a la última versión (v${APP_VERSION}).`;
       updateBtnAction.textContent = 'Entendido';
       updateBtnAction.style.display = 'block';
       currentUpdateAction = 'cerrar';
       break;
 
-    case 'descargada':
-      updateLoader.style.display = 'none';
-      updateProgressContainer.style.display = 'none';
-      updateModalTitle.textContent = '¡Descarga completa!';
-      updateModalDesc.textContent = 'La actualización se descargó correctamente. El reproductor se reiniciará para aplicar los cambios.';
-      updateBtnAction.textContent = 'Reiniciar e instalar';
-      updateBtnAction.style.display = 'block';
-      currentUpdateAction = 'instalar';
-      break;
-
     case 'error':
       updateLoader.style.display = 'none';
       updateProgressContainer.style.display = 'none';
-      updateModalTitle.textContent = 'Error';
-      updateModalDesc.textContent = info || 'Ocurrió un error inesperado al buscar actualizaciones.';
+      updateModalTitle.textContent = 'Error de actualización';
+      updateModalDesc.textContent = info || 'Ocurrió un error inesperado al gestionar la actualización.';
       updateBtnAction.textContent = 'Aceptar';
       updateBtnAction.style.display = 'block';
       currentUpdateAction = 'cerrar';
