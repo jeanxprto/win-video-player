@@ -124,15 +124,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/icon.ico")
 endif()
 
 # Accesos directos en Windows (Menú Inicio y Escritorio)
-set(CPACK_NSIS_CREATE_ICONS_EXTRA "
-  CreateShortCut \"$SMPROGRAMS\\\\$STARTMENU_FOLDER\\\\Sophy Player.lnk\" \"$INSTDIR\\\\SophyPlayer.exe\"
-  CreateShortCut \"$DESKTOP\\\\Sophy Player.lnk\" \"$INSTDIR\\\\SophyPlayer.exe\"
-")
+set(CPACK_NSIS_CREATE_ICONS_EXTRA [[
+  CreateShortCut "$SMPROGRAMS\\$STARTMENU_FOLDER\\Sophy Player.lnk" "$INSTDIR\\SophyPlayer.exe"
+  CreateShortCut "$DESKTOP\\Sophy Player.lnk" "$INSTDIR\\SophyPlayer.exe"
+]])
 
-set(CPACK_NSIS_DELETE_ICONS_EXTRA "
-  Delete \"$SMPROGRAMS\\\\$START_SELECT_DESTINATION\\\\Sophy Player.lnk\"
-  Delete \"$DESKTOP\\\\Sophy Player.lnk\"
-")
+set(CPACK_NSIS_DELETE_ICONS_EXTRA [[
+  Delete "$SMPROGRAMS\\$START_SELECT_DESTINATION\\Sophy Player.lnk"
+  Delete "$DESKTOP\\Sophy Player.lnk"
+]])
 
 # Desinstalar la versión anterior antes de instalar la nueva
 set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
