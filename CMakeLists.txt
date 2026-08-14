@@ -112,6 +112,7 @@ set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE.txt")
 
 # Configurar el generador NSIS específico de Windows
 set(CPACK_GENERATOR "NSIS")
+set(CPACK_NSIS_ENABLE_UNICODE ON)
 
 # Configuración detallada del instalador NSIS
 set(CPACK_NSIS_DISPLAY_NAME "Sophy Player")
