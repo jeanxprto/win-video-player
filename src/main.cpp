@@ -41,6 +41,60 @@ PlayerManager* g_player = nullptr;
 HWND g_hWndParent = nullptr;
 HWND g_hWndVideo = nullptr;
 
+// Estado de pantalla completa
+static bool g_isFullscreen = false;
+static WINDOWPLACEMENT g_wpPrev = { sizeof(g_wpPrev) };
+static LONG_PTR g_stylePrev = 0;
+static int g_nCmdShow = SW_SHOWNORMAL;
+
+// Helper para alternar la pantalla completa nativa
+static void SetFullscreen(HWND hWnd, bool fullscreen) {
+    if (fullscreen == g_isFullscreen) return;
+
+    if (fullscreen) {
+        // Guardar estilo y posición anteriores de la ventana
+        g_stylePrev = GetWindowLongPtrW(hWnd, GWL_STYLE);
+        GetWindowPlacement(hWnd, &g_wpPrev);
+
+        // Obtener la información del monitor actual
+        HMONITOR hMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO mi = { sizeof(mi) };
+        if (GetMonitorInfoW(hMonitor, &mi)) {
+            // Quitar los estilos de borde de redimensionamiento (WS_THICKFRAME)
+            SetWindowLongPtrW(hWnd, GWL_STYLE, g_stylePrev & ~WS_THICKFRAME);
+
+            // Deshabilitar esquinas redondeadas nativas de Windows 11 en pantalla completa (DWMWCP_DONOTROUND = 1)
+            DWORD cornerPreference = 1;
+            DwmSetWindowAttribute(hWnd, 33, &cornerPreference, sizeof(cornerPreference));
+
+            // Mover la ventana para cubrir toda la pantalla del monitor (incluyendo la barra de tareas)
+            SetWindowPos(hWnd, HWND_TOP,
+                mi.rcMonitor.left, mi.rcMonitor.top,
+                mi.rcMonitor.right - mi.rcMonitor.left,
+                mi.rcMonitor.bottom - mi.rcMonitor.top,
+                SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+
+            g_isFullscreen = true;
+        }
+    } else {
+        // Restaurar el estilo original
+        SetWindowLongPtrW(hWnd, GWL_STYLE, g_stylePrev);
+
+        // Restaurar la posición original
+        SetWindowPlacement(hWnd, &g_wpPrev);
+
+        // Restaurar esquinas redondeadas nativas de Windows 11 (DWMWCP_ROUND = 2)
+        DWORD cornerPreference = 2;
+        DwmSetWindowAttribute(hWnd, 33, &cornerPreference, sizeof(cornerPreference));
+
+        // Forzar actualización del marco de la ventana
+        SetWindowPos(hWnd, NULL, 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+        g_isFullscreen = false;
+    }
+}
+
 // Helper para convertir string UTF-8 a wstring UTF-16 en Windows
 static std::wstring Utf8ToUtf16(const std::string& utf8Str) {
     if (utf8Str.empty()) return L"";
@@ -175,6 +229,25 @@ void HandleWebViewMessage(const std::wstring& messageJson) {
             SendMessage(g_hWndParent, WM_NCLBUTTONDOWN, wParamHit, 0);
         }
     }
+    else if (action == L"window-fullscreen") {
+        std::wstring fsStr = GetJsonValue(messageJson, L"fullscreen");
+        bool fullscreen = (fsStr == L"true");
+        SetFullscreen(g_hWndParent, fullscreen);
+    }
+    else if (action == L"app-ready") {
+        ShowWindow(g_hWndParent, g_nCmdShow);
+        UpdateWindow(g_hWndParent);
+    }
+    else if (action == L"drag-drop-file") {
+        std::wstring path = GetJsonValue(messageJson, L"path");
+        if (!path.empty()) {
+            // Solo enviar el evento a la UI web. 
+            // La UI web llamará a loadVideo(), que a su vez enviará el mensaje "load" de vuelta a C++ de forma ordenada.
+            std::wstringstream ws;
+            ws << L"{\"type\":\"file-selected\",\"path\":\"" << EscapeJsonString(path) << L"\"}";
+            if (g_webview) g_webview->PostMessage(ws.str());
+        }
+    }
     else if (action == L"open-file-dialog") {
         PostMessageW(g_hWndParent, WM_USER_OPEN_FILE_DIALOG, 0, 0);
     }
@@ -300,6 +373,7 @@ void HandleWebViewMessage(const std::wstring& messageJson) {
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow) {
+    g_nCmdShow = nCmdShow;
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
 
     // 1. Registrar clase de la ventana principal
@@ -389,9 +463,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     // Configurar Z-Order: la ventana de video va al fondo para dejar al WebView2 al frente transparente
     SetWindowPos(g_hWndVideo, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
-    // Mostrar ventana principal
-    ShowWindow(g_hWndParent, nCmdShow);
-    UpdateWindow(g_hWndParent);
+    // Mostrar ventana principal (se mostrará cuando la UI envíe "app-ready")
+    // ShowWindow(g_hWndParent, nCmdShow);
+    // UpdateWindow(g_hWndParent);
 
     // Bucle principal de mensajes
     MSG msg;
@@ -448,6 +522,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             // Evitar que Windows dibuje bordes por defecto cuando la ventana pierde el foco o se desactiva
             return TRUE;
 
+        case WM_GETMINMAXINFO: {
+            if (g_isFullscreen) {
+                // Si está en pantalla completa, permitir que cubra todo el monitor actual
+                break;
+            }
+            MINMAXINFO* mmi = reinterpret_cast<MINMAXINFO*>(lParam);
+            HMONITOR hMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO mi = { sizeof(mi) };
+            if (GetMonitorInfoW(hMonitor, &mi)) {
+                // Limitar el tamaño máximo al maximizar para respetar el área de trabajo (rcWork, excluyendo la barra de tareas)
+                mmi->ptMaxPosition.x = mi.rcWork.left;
+                mmi->ptMaxPosition.y = mi.rcWork.top;
+                mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+                mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+            }
+            return 0;
+        }
+
         case WM_SIZE: {
             RECT rc;
             GetClientRect(hWnd, &rc);
@@ -456,6 +548,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             }
             if (g_webview) {
                 g_webview->Resize();
+                // Enviar el estado de maximizado a la UI
+                if (wParam == SIZE_MAXIMIZED) {
+                    g_webview->PostMessage(L"{\"type\":\"window-maximized\",\"maximized\":true}");
+                } else if (wParam == SIZE_RESTORED) {
+                    g_webview->PostMessage(L"{\"type\":\"window-maximized\",\"maximized\":false}");
+                }
             }
             break;
         }

@@ -188,6 +188,7 @@ const winCloseBtn = document.getElementById('win-close-btn');
 let currentFilePath = '';
 let previousVolume = 1;          
 let isSeeking = false;           
+let isFullscreen = false;
 let controlsTimeout = null;
 
 // SVG Icons para alternar Estados
@@ -435,19 +436,26 @@ function handleTimelineDrag(e) {
 
 // Pantalla Completa
 function toggleFullscreen() {
-  if (!document.fullscreenElement) {
-    document.documentElement.requestFullscreen().then(() => {
-      fullscreenIcon.innerHTML = MINIMIZE_SCREEN_SVG;
-      updateVideoPosition();
-    }).catch(err => {
-      console.error('Error al intentar activar pantalla completa:', err);
-    });
-  } else {
-    document.exitFullscreen().then(() => {
-      fullscreenIcon.innerHTML = FULLSCREEN_SVG;
-      updateVideoPosition();
-    });
+  isFullscreen = !isFullscreen;
+  
+  // Informar al backend de C++ para alternar la pantalla completa nativa
+  window.chrome.webview.postMessage(JSON.stringify({ 
+    action: 'window-fullscreen', 
+    fullscreen: isFullscreen 
+  }));
+
+  // Actualizar la clase de la app para ocultar bordes en CSS
+  const appContainer = document.querySelector('.app-container');
+  if (appContainer) {
+    if (isFullscreen) {
+      appContainer.classList.add('fullscreen');
+    } else {
+      appContainer.classList.remove('fullscreen');
+    }
   }
+  
+  // Actualizar el icono de la interfaz de usuario
+  fullscreenIcon.innerHTML = isFullscreen ? MINIMIZE_SCREEN_SVG : FULLSCREEN_SVG;
 }
 
 fullscreenBtn.addEventListener('click', (e) => {
@@ -567,9 +575,26 @@ document.querySelector('.player-content').addEventListener('mousemove', triggerC
    Drag & Drop de Archivos
    ========================================== */
 
-['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+['dragenter', 'dragover', 'dragleave'].forEach(eventName => {
   document.addEventListener(eventName, preventDefaults, false);
 });
+
+document.addEventListener('drop', (e) => {
+  const dt = e.dataTransfer;
+  const files = dt.files;
+  if (files.length > 0) {
+    const file = files[0];
+    if (file && file.path) {
+      e.preventDefault();
+      e.stopPropagation();
+    } else {
+      e.stopPropagation(); // Permitir que la navegación continúe para que C++ la intercepte
+    }
+  } else {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+}, false);
 
 function preventDefaults(e) {
   e.preventDefault();
@@ -602,6 +627,7 @@ dropZone.addEventListener('drop', (e) => {
   if (files.length > 0) {
     const file = files[0];
     if (file && file.path) {
+      e.preventDefault();
       const ext = path.extname(file.path).toLowerCase();
       const videoExtensions = ['.mp4', '.webm', '.ogg', '.mkv', '.avi', '.flv', 'mov', 'wmv', 'm4v', '3gp'];
       
@@ -614,11 +640,12 @@ dropZone.addEventListener('drop', (e) => {
         }
       }
     } else {
-      alert('Por motivos de seguridad del navegador, para reproducir un video debes utilizar el botón "Seleccionar Archivo".');
-      if (currentFilePath !== '') {
-        dropZone.classList.remove('active');
-      }
+      // Si estamos en WebView2 y no hay file.path directo en JS, NO prevenimos la acción por defecto.
+      // Esto hace que el navegador navegue al archivo local (lo cual capturamos y cancelamos en C++ mediante NavigationStarting).
+      dropZone.classList.remove('active');
     }
+  } else {
+    e.preventDefault();
   }
 });
 
@@ -644,6 +671,12 @@ document.addEventListener('keydown', (e) => {
     case 'KeyF':
       e.preventDefault();
       toggleFullscreen();
+      break;
+    case 'Escape':
+      if (isFullscreen) {
+        e.preventDefault();
+        toggleFullscreen();
+      }
       break;
     case 'ArrowUp':
       e.preventDefault();
@@ -1173,3 +1206,6 @@ window.addEventListener('mousedown', (e) => {
     window.chrome.webview.postMessage(JSON.stringify({ action: 'window-resize', direction: dir }));
   }
 });
+
+// Indicar al backend nativo que la interfaz de usuario ha cargado completamente y está lista
+window.chrome.webview.postMessage(JSON.stringify({ action: 'app-ready' }));
