@@ -246,7 +246,7 @@ void PlayerManager::HandleVlcEvent(const struct libvlc_event_t* p_event) {
             break;
         case libvlc_MediaPlayerEncounteredError: {
             const char* err = libvlc_errmsg();
-            std::wstring errMsg = L"Error de reproducción en libVLC:\n";
+            std::wstring errMsg = L"Error de reproducci\u00f3n en libVLC:\n";
             if (err) {
                 // Convertir const char* de UTF-8 a std::wstring para el MessageBox
                 int len = MultiByteToWideChar(CP_UTF8, 0, err, -1, NULL, 0);

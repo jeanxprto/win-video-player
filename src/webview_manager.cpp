@@ -8,38 +8,45 @@ static std::wstring FileUrlToLocalPath(const std::wstring& url) {
     if (url.rfind(L"file://", 0) != 0) return L"";
 
     // Remover "file://"
-    std::wstring path = url.substr(7);
+    std::wstring pathPart = url.substr(7);
 
     // Si empieza con L'/', removerlo (ej. /C:/path -> C:/path)
-    if (!path.empty() && path[0] == L'/') {
-        path = path.substr(1);
+    if (!pathPart.empty() && pathPart[0] == L'/') {
+        pathPart = pathPart.substr(1);
     }
 
     // Reemplazar '/' por '\'
-    for (size_t i = 0; i < path.length(); ++i) {
-        if (path[i] == L'/') {
-            path[i] = L'\\';
+    for (size_t i = 0; i < pathPart.length(); ++i) {
+        if (pathPart[i] == L'/') {
+            pathPart[i] = L'\\';
         }
     }
 
-    // Decodificar caracteres URL-encoded (como %20)
-    std::wstring decoded;
-    decoded.reserve(path.length());
-    for (size_t i = 0; i < path.length(); ++i) {
-        if (path[i] == L'%' && i + 2 < path.length()) {
-            wchar_t hex[3] = { path[i+1], path[i+2], L'\0' };
+    // Decodificar el percent-encoding a una cadena de bytes UTF-8 (std::string)
+    std::string utf8Str;
+    utf8Str.reserve(pathPart.length());
+    for (size_t i = 0; i < pathPart.length(); ++i) {
+        if (pathPart[i] == L'%' && i + 2 < pathPart.length()) {
+            wchar_t hex[3] = { pathPart[i+1], pathPart[i+2], L'\0' };
             wchar_t* end;
             long val = wcstol(hex, &end, 16);
             if (end != hex) {
-                decoded += static_cast<wchar_t>(val);
+                utf8Str += static_cast<char>(val);
                 i += 2;
                 continue;
             }
         }
-        decoded += path[i];
+        // Los caracteres normales se convierten a char simple (ASCII)
+        utf8Str += static_cast<char>(pathPart[i]);
     }
 
-    return decoded;
+    // Convertir la cadena de bytes UTF-8 resultante a UTF-16 (std::wstring) para Windows
+    if (utf8Str.empty()) return L"";
+    int sizeNeeded = MultiByteToWideChar(CP_UTF8, 0, &utf8Str[0], (int)utf8Str.size(), NULL, 0);
+    std::wstring utf16Str(sizeNeeded, 0);
+    MultiByteToWideChar(CP_UTF8, 0, &utf8Str[0], (int)utf8Str.size(), &utf16Str[0], sizeNeeded);
+
+    return utf16Str;
 }
 
 static bool FileExists(const std::wstring& path) {
