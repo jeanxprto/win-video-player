@@ -2,6 +2,46 @@
 #include <iostream>
 #include <shlwapi.h>
 
+#define WM_USER_DRAG_DROP_FILE (WM_USER + 8)
+
+static std::wstring FileUrlToLocalPath(const std::wstring& url) {
+    if (url.rfind(L"file://", 0) != 0) return L"";
+
+    // Remover "file://"
+    std::wstring path = url.substr(7);
+
+    // Si empieza con L'/', removerlo (ej. /C:/path -> C:/path)
+    if (!path.empty() && path[0] == L'/') {
+        path = path.substr(1);
+    }
+
+    // Reemplazar '/' por '\'
+    for (size_t i = 0; i < path.length(); ++i) {
+        if (path[i] == L'/') {
+            path[i] = L'\\';
+        }
+    }
+
+    // Decodificar caracteres URL-encoded (como %20)
+    std::wstring decoded;
+    decoded.reserve(path.length());
+    for (size_t i = 0; i < path.length(); ++i) {
+        if (path[i] == L'%' && i + 2 < path.length()) {
+            wchar_t hex[3] = { path[i+1], path[i+2], L'\0' };
+            wchar_t* end;
+            long val = wcstol(hex, &end, 16);
+            if (end != hex) {
+                decoded += static_cast<wchar_t>(val);
+                i += 2;
+                continue;
+            }
+        }
+        decoded += path[i];
+    }
+
+    return decoded;
+}
+
 static bool FileExists(const std::wstring& path) {
     DWORD dwAttrib = GetFileAttributesW(path.c_str());
     return (dwAttrib != INVALID_FILE_ATTRIBUTES && !(dwAttrib & FILE_ATTRIBUTE_DIRECTORY));
@@ -217,9 +257,9 @@ bool WebviewManager::SetupWebView(ICoreWebView2Controller* controller) {
     // Registrar el manejador de NavigationStarting para drag-and-drop de archivos
     class NavigationStartingHandler : public ICoreWebView2NavigationStartingEventHandler {
     private:
-        std::function<void(const std::wstring&)> m_cb;
+        HWND m_hWndParent;
     public:
-        NavigationStartingHandler(std::function<void(const std::wstring&)> cb) : m_cb(cb) {}
+        NavigationStartingHandler(HWND hWndParent) : m_hWndParent(hWndParent) {}
 
         HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override {
             if (riid == IID_IUnknown || riid == IID_ICoreWebView2NavigationStartingEventHandler) {
@@ -242,23 +282,12 @@ bool WebviewManager::SetupWebView(ICoreWebView2Controller* controller) {
                     // Cancelar la navegación
                     args->put_Cancel(TRUE);
 
-                    // Convertir URL a ruta local de Windows usando shlwapi
-                    wchar_t filePath[MAX_PATH];
-                    DWORD filePathLen = MAX_PATH;
-                    HRESULT hr = PathCreateFromUrlW(uriStr.c_str(), filePath, &filePathLen, 0);
-                    if (SUCCEEDED(hr)) {
-                        // Escapar ruta para JSON seguro
-                        std::wstring escapedPath;
-                        for (wchar_t c : filePath) {
-                            if (c == L'\\') escapedPath += L"\\\\";
-                            else if (c == L'"') escapedPath += L"\\\"";
-                            else escapedPath += c;
-                        }
-
-                        // Enviar mensaje de drag-drop al backend a través del callback
-                        if (m_cb) {
-                            m_cb(L"{\"action\":\"drag-drop-file\",\"path\":\"" + escapedPath + L"\"}");
-                        }
+                    // Convertir URL a ruta local de Windows usando nuestro decodificador robusto
+                    std::wstring localPath = FileUrlToLocalPath(uriStr);
+                    if (!localPath.empty()) {
+                        // Enviar mensaje de drag-drop al hilo principal (UI Thread) para evitar reentrada
+                        std::wstring* pPath = new std::wstring(localPath);
+                        PostMessageW(m_hWndParent, WM_USER_DRAG_DROP_FILE, 0, reinterpret_cast<LPARAM>(pPath));
                     }
                 }
             }
@@ -266,15 +295,15 @@ bool WebviewManager::SetupWebView(ICoreWebView2Controller* controller) {
         }
     };
 
-    auto navHandler = new NavigationStartingHandler(onMessageReceived);
+    auto navHandler = new NavigationStartingHandler(hWndParent);
     webviewWindow->add_NavigationStarting(navHandler, nullptr);
 
     // Registrar el manejador de NewWindowRequested para interceptar drag-and-drop de archivos que abren nuevas ventanas
     class NewWindowRequestedHandler : public ICoreWebView2NewWindowRequestedEventHandler {
     private:
-        std::function<void(const std::wstring&)> m_cb;
+        HWND m_hWndParent;
     public:
-        NewWindowRequestedHandler(std::function<void(const std::wstring&)> cb) : m_cb(cb) {}
+        NewWindowRequestedHandler(HWND hWndParent) : m_hWndParent(hWndParent) {}
 
         HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) override {
             if (riid == IID_IUnknown || riid == IID_ICoreWebView2NewWindowRequestedEventHandler) {
@@ -297,23 +326,12 @@ bool WebviewManager::SetupWebView(ICoreWebView2Controller* controller) {
                     // Marcar como manejado para evitar que WebView2 abra la ventana del navegador
                     args->put_Handled(TRUE);
 
-                    // Convertir URL a ruta local de Windows usando shlwapi
-                    wchar_t filePath[MAX_PATH];
-                    DWORD filePathLen = MAX_PATH;
-                    HRESULT hr = PathCreateFromUrlW(uriStr.c_str(), filePath, &filePathLen, 0);
-                    if (SUCCEEDED(hr)) {
-                        // Escapar ruta para JSON seguro
-                        std::wstring escapedPath;
-                        for (wchar_t c : filePath) {
-                            if (c == L'\\') escapedPath += L"\\\\";
-                            else if (c == L'"') escapedPath += L"\\\"";
-                            else escapedPath += c;
-                        }
-
-                        // Enviar mensaje de drag-drop al backend a través del callback
-                        if (m_cb) {
-                            m_cb(L"{\"action\":\"drag-drop-file\",\"path\":\"" + escapedPath + L"\"}");
-                        }
+                    // Convertir URL a ruta local de Windows usando nuestro decodificador robusto
+                    std::wstring localPath = FileUrlToLocalPath(uriStr);
+                    if (!localPath.empty()) {
+                        // Enviar mensaje de drag-drop al hilo principal (UI Thread) para evitar reentrada
+                        std::wstring* pPath = new std::wstring(localPath);
+                        PostMessageW(m_hWndParent, WM_USER_DRAG_DROP_FILE, 0, reinterpret_cast<LPARAM>(pPath));
                     }
                 }
             }
@@ -321,7 +339,7 @@ bool WebviewManager::SetupWebView(ICoreWebView2Controller* controller) {
         }
     };
 
-    auto newWinHandler = new NewWindowRequestedHandler(onMessageReceived);
+    auto newWinHandler = new NewWindowRequestedHandler(hWndParent);
     webviewWindow->add_NewWindowRequested(newWinHandler, nullptr);
 
     // 3. Mapear directorio de UI local a un host virtual http://sophyplayer.local

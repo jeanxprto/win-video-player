@@ -24,6 +24,7 @@
 #define WM_USER_OPEN_SUBTITLE_DIALOG (WM_USER + 5)
 #define WM_USER_UPDATE_DOWNLOAD_COMPLETE (WM_USER + 6)
 #define WM_USER_UPDATE_DOWNLOAD_FAILED (WM_USER + 7)
+#define WM_USER_DRAG_DROP_FILE (WM_USER + 8)
 
 struct MediaLoadedData {
     double duration;
@@ -514,6 +515,19 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 std::wstringstream ws;
                 ws << L"{\"type\":\"subtitle-selected\",\"path\":\"" << EscapeJsonString(pathSelected) << L"\"}";
                 if (g_webview) g_webview->PostMessage(ws.str());
+            }
+            break;
+        }
+
+        case WM_USER_DRAG_DROP_FILE: {
+            std::wstring* pPath = reinterpret_cast<std::wstring*>(lParam);
+            if (pPath) {
+                // Notificar a la UI web (JS) de que se seleccionó un archivo por drag-drop
+                std::wstringstream ws;
+                ws << L"{\"type\":\"file-selected\",\"path\":\"" << EscapeJsonString(*pPath) << L"\"}";
+                if (g_webview) g_webview->PostMessage(ws.str());
+                
+                delete pPath;
             }
             break;
         }
